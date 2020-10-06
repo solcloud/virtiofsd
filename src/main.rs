@@ -2,24 +2,16 @@
 //
 // SPDX-License-Identifier: (Apache-2.0 AND BSD-3-Clause)
 
-#[macro_use(crate_version, crate_authors)]
-extern crate clap;
-extern crate log;
-extern crate vhost_rs;
-extern crate vhost_user_backend;
-extern crate virtio_devices;
-
-use clap::{App, Arg};
+use clap::{crate_authors, crate_version, App, Arg};
 use futures::executor::{ThreadPool, ThreadPoolBuilder};
 use libc::EFD_NONBLOCK;
 use log::*;
 use seccomp::SeccompAction;
-use std::num::Wrapping;
 use std::sync::{Arc, Mutex, RwLock};
 use std::{convert, error, fmt, io, process};
 
-use vhost_rs::vhost_user::message::*;
-use vhost_rs::vhost_user::{Listener, SlaveFsCacheReq};
+use vhost::vhost_user::message::*;
+use vhost::vhost_user::{Listener, SlaveFsCacheReq};
 use vhost_user_backend::{VhostUserBackend, VhostUserDaemon, Vring};
 use vhost_user_fs::descriptor_utils::Error as VufDescriptorError;
 use vhost_user_fs::descriptor_utils::{Reader, Writer};
@@ -34,7 +26,7 @@ use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
-use vm_virtio::queue::DescriptorChain;
+use vm_virtio::Queue;
 use vmm_sys_util::eventfd::EventFd;
 
 const QUEUE_SIZE: usize = 1024;
@@ -61,6 +53,8 @@ enum Error {
     HandleEventNotEpollIn,
     /// Failed to handle unknown event.
     HandleEventUnknownEvent,
+    /// Iterating through the queue failed.
+    IterateQueue,
     /// No memory configured.
     NoMemoryConfigured,
     /// Processing queue failed.
@@ -123,34 +117,36 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
         })
     }
 
-    fn process_queue(&mut self, vring_lock: Arc<RwLock<Vring>>) -> Result<bool> {
+    fn process_queue(
+        &mut self,
+        queue: &mut Queue<GuestMemoryAtomic<GuestMemoryMmap>>,
+        vring_lock: Arc<RwLock<Vring>>,
+    ) -> Result<bool> {
         let mut used_any = false;
-        let (atomic_mem, mem) = match &self.mem {
-            Some(m) => (m, m.memory()),
+        let atomic_mem = match &self.mem {
+            Some(m) => m,
             None => return Err(Error::NoMemoryConfigured),
         };
-        let mut vring = vring_lock.write().unwrap();
 
-        while let Some(avail_desc) = vring.mut_queue().iter(&mem).next() {
+        while let Some(avail_desc) = queue.iter().map_err(|_| Error::IterateQueue)?.next() {
             used_any = true;
 
             // Prepare a set of objects that can be moved to the worker thread.
-            let desc_head = avail_desc.get_head();
             let atomic_mem = atomic_mem.clone();
             let server = self.server.clone();
             let mut vu_req = self.vu_req.clone();
             let event_idx = self.event_idx;
             let vring_lock = vring_lock.clone();
+            let worker_desc = avail_desc.clone();
 
             self.pool.spawn_ok(async move {
                 let mem = atomic_mem.memory();
-                let desc = DescriptorChain::new_from_head(&mem, desc_head).unwrap();
-                let head_index = desc.index;
+                let head_index = worker_desc.head_index();
 
-                let reader = Reader::new(&mem, desc.clone())
+                let reader = Reader::new(&mem, worker_desc.clone())
                     .map_err(Error::QueueReader)
                     .unwrap();
-                let writer = Writer::new(&mem, desc.clone())
+                let writer = Writer::new(&mem, worker_desc.clone())
                     .map_err(Error::QueueWriter)
                     .unwrap();
 
@@ -163,13 +159,25 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
 
                 if event_idx {
                     let queue = vring.mut_queue();
-                    if let Some(used_idx) = queue.add_used(&mem, head_index, 0) {
-                        if queue.needs_notification(&mem, Wrapping(used_idx)) {
+                    if queue.add_used(head_index, 0).is_err() {
+                        warn!("Couldn't return used descriptors to the ring");
+                    }
+
+                    match queue.needs_notification() {
+                        Err(_) => {
+                            warn!("Couldn't check if queue needs to be notified");
                             vring.signal_used_queue().unwrap();
+                        }
+                        Ok(needs_notification) => {
+                            if needs_notification {
+                                vring.signal_used_queue().unwrap();
+                            }
                         }
                     }
                 } else {
-                    vring.mut_queue().add_used(&mem, head_index, 0);
+                    if vring.mut_queue().add_used(head_index, 0).is_err() {
+                        warn!("Couldn't return used descriptors to the ring");
+                    }
                     vring.signal_used_queue().unwrap();
                 }
             });
@@ -214,8 +222,11 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend for VhostUserFsBack
         self.thread.lock().unwrap().event_idx = enabled;
     }
 
-    fn update_memory(&mut self, mem: GuestMemoryMmap) -> VhostUserBackendResult<()> {
-        self.thread.lock().unwrap().mem = Some(GuestMemoryAtomic::new(mem));
+    fn update_memory(
+        &mut self,
+        mem: GuestMemoryAtomic<GuestMemoryMmap>,
+    ) -> VhostUserBackendResult<()> {
+        self.thread.lock().unwrap().mem = Some(mem);
         Ok(())
     }
 
@@ -231,10 +242,6 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend for VhostUserFsBack
         }
 
         let mut thread = self.thread.lock().unwrap();
-        let mem = match &thread.mem {
-            Some(m) => m.memory(),
-            None => return Err(Error::NoMemoryConfigured.into()),
-        };
 
         let vring_lock = match device_event {
             HIPRIO_QUEUE_EVENT => {
@@ -253,18 +260,20 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend for VhostUserFsBack
             // once, so to properly support EVENT_IDX we need to keep
             // calling process_queue() until it stops finding new
             // requests on the queue.
+            let mut vring = vring_lock.write().unwrap();
+            let queue = vring.mut_queue();
             loop {
-                {
-                    let mut vring = vring_lock.write().unwrap();
-                    vring.mut_queue().update_avail_event(&mem);
-                }
-                if !thread.process_queue(vring_lock.clone())? {
+                queue.disable_notification().unwrap();
+                thread.process_queue(queue, vring_lock.clone())?;
+                if !queue.enable_notification().unwrap() {
                     break;
                 }
             }
         } else {
             // Without EVENT_IDX, a single call is enough.
-            thread.process_queue(vring_lock)?;
+            let mut vring = vring_lock.write().unwrap();
+            let queue = vring.mut_queue();
+            thread.process_queue(queue, vring_lock.clone())?;
         }
 
         Ok(false)

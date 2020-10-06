@@ -12,10 +12,9 @@ use std::ptr::copy_nonoverlapping;
 use std::result;
 
 use vm_memory::{
-    Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryError, GuestMemoryMmap,
+    Address, ByteValued, GuestMemory, GuestMemoryAtomic, GuestMemoryError, GuestMemoryMmap,
     GuestMemoryRegion, Le16, Le32, Le64, VolatileMemory, VolatileMemoryError, VolatileSlice,
 };
-use vm_virtio::queue::Error as QueueError;
 use vm_virtio::DescriptorChain;
 
 use crate::file_traits::{FileReadWriteAtVolatile, FileReadWriteVolatile};
@@ -26,7 +25,6 @@ pub enum Error {
     FindMemoryRegion,
     GuestMemoryError(GuestMemoryError),
     InvalidChain,
-    ConvertIndirectDescriptor(QueueError),
     IoError(io::Error),
     SplitOutOfBounds(usize),
     VolatileMemoryError(VolatileMemoryError),
@@ -37,7 +35,6 @@ impl Display for Error {
         use self::Error::*;
 
         match self {
-            ConvertIndirectDescriptor(e) => write!(f, "invalid indirect descriptor: {}", e),
             DescriptorChainOverflow => write!(
                 f,
                 "the combined length of all the buffers in a `DescriptorChain` would overflow"
@@ -192,34 +189,31 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     /// Construct a new Reader wrapper over `desc_chain`.
-    pub fn new(mem: &'a GuestMemoryMmap, desc_chain: DescriptorChain<'a>) -> Result<Reader<'a>> {
+    pub fn new(
+        mem: &'a GuestMemoryMmap,
+        desc_chain: DescriptorChain<GuestMemoryAtomic<GuestMemoryMmap>>,
+    ) -> Result<Reader<'a>> {
         let mut total_len: usize = 0;
-        let chain = if desc_chain.is_indirect() {
-            desc_chain
-                .new_from_indirect()
-                .map_err(Error::ConvertIndirectDescriptor)?
-        } else {
-            desc_chain
-        };
-        let buffers = chain
-            .into_iter()
+        let buffers = desc_chain
             .readable()
             .map(|desc| {
                 // Verify that summing the descriptor sizes does not overflow.
                 // This can happen if a driver tricks a device into reading more data than
                 // fits in a `usize`.
                 total_len = total_len
-                    .checked_add(desc.len as usize)
+                    .checked_add(desc.len() as usize)
                     .ok_or(Error::DescriptorChainOverflow)?;
 
-                let region = mem.find_region(desc.addr).ok_or(Error::FindMemoryRegion)?;
+                let region = mem
+                    .find_region(desc.addr())
+                    .ok_or(Error::FindMemoryRegion)?;
                 let offset = desc
-                    .addr
+                    .addr()
                     .checked_sub(region.start_addr().raw_value())
                     .unwrap();
                 region
                     .deref()
-                    .get_slice(offset.raw_value() as usize, desc.len as usize)
+                    .get_slice(offset.raw_value() as usize, desc.len() as usize)
                     .map_err(Error::VolatileMemoryError)
             })
             .collect::<Result<VecDeque<VolatileSlice<'a>>>>()?;
@@ -351,34 +345,31 @@ pub struct Writer<'a> {
 
 impl<'a> Writer<'a> {
     /// Construct a new Writer wrapper over `desc_chain`.
-    pub fn new(mem: &'a GuestMemoryMmap, desc_chain: DescriptorChain<'a>) -> Result<Writer<'a>> {
+    pub fn new(
+        mem: &'a GuestMemoryMmap,
+        desc_chain: DescriptorChain<GuestMemoryAtomic<GuestMemoryMmap>>,
+    ) -> Result<Writer<'a>> {
         let mut total_len: usize = 0;
-        let chain = if desc_chain.is_indirect() {
-            desc_chain
-                .new_from_indirect()
-                .map_err(Error::ConvertIndirectDescriptor)?
-        } else {
-            desc_chain
-        };
-        let buffers = chain
-            .into_iter()
+        let buffers = desc_chain
             .writable()
             .map(|desc| {
                 // Verify that summing the descriptor sizes does not overflow.
                 // This can happen if a driver tricks a device into writing more data than
                 // fits in a `usize`.
                 total_len = total_len
-                    .checked_add(desc.len as usize)
+                    .checked_add(desc.len() as usize)
                     .ok_or(Error::DescriptorChainOverflow)?;
 
-                let region = mem.find_region(desc.addr).ok_or(Error::FindMemoryRegion)?;
+                let region = mem
+                    .find_region(desc.addr())
+                    .ok_or(Error::FindMemoryRegion)?;
                 let offset = desc
-                    .addr
+                    .addr()
                     .checked_sub(region.start_addr().raw_value())
                     .unwrap();
                 region
                     .deref()
-                    .get_slice(offset.raw_value() as usize, desc.len as usize)
+                    .get_slice(offset.raw_value() as usize, desc.len() as usize)
                     .map_err(Error::VolatileMemoryError)
             })
             .collect::<Result<VecDeque<VolatileSlice<'a>>>>()?;
@@ -490,9 +481,6 @@ impl<'a> io::Write for Writer<'a> {
     }
 }
 
-const VIRTQ_DESC_F_NEXT: u16 = 0x1;
-const VIRTQ_DESC_F_WRITE: u16 = 0x2;
-
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum DescriptorType {
     Readable,
@@ -511,52 +499,56 @@ struct virtq_desc {
 // Safe because it only has data and has no implicit padding.
 unsafe impl ByteValued for virtq_desc {}
 
-/// Test utility function to create a descriptor chain in guest memory.
-pub fn create_descriptor_chain(
-    memory: &GuestMemoryMmap,
-    descriptor_array_addr: GuestAddress,
-    mut buffers_start_addr: GuestAddress,
-    descriptors: Vec<(DescriptorType, u32)>,
-    spaces_between_regions: u32,
-) -> Result<DescriptorChain> {
-    let descriptors_len = descriptors.len();
-    for (index, (type_, size)) in descriptors.into_iter().enumerate() {
-        let mut flags = 0;
-        if let DescriptorType::Writable = type_ {
-            flags |= VIRTQ_DESC_F_WRITE;
-        }
-        if index + 1 < descriptors_len {
-            flags |= VIRTQ_DESC_F_NEXT;
-        }
-
-        let index = index as u16;
-        let desc = virtq_desc {
-            addr: buffers_start_addr.raw_value().into(),
-            len: size.into(),
-            flags: flags.into(),
-            next: (index + 1).into(),
-        };
-
-        let offset = size + spaces_between_regions;
-        buffers_start_addr = buffers_start_addr
-            .checked_add(u64::from(offset))
-            .ok_or(Error::InvalidChain)?;
-
-        let _ = memory.write_obj(
-            desc,
-            descriptor_array_addr
-                .checked_add(u64::from(index) * std::mem::size_of::<virtq_desc>() as u64)
-                .ok_or(Error::InvalidChain)?,
-        );
-    }
-
-    DescriptorChain::checked_new(memory, descriptor_array_addr, 0x100, 0, None)
-        .ok_or(Error::InvalidChain)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vm_memory::{Bytes, GuestAddress};
+
+    const VIRTQ_DESC_F_NEXT: u16 = 0x1;
+    const VIRTQ_DESC_F_WRITE: u16 = 0x2;
+
+    /// Test utility function to create a descriptor chain in guest memory.
+    pub fn create_descriptor_chain(
+        memory: &GuestMemoryMmap,
+        descriptor_array_addr: GuestAddress,
+        mut buffers_start_addr: GuestAddress,
+        descriptors: Vec<(DescriptorType, u32)>,
+        spaces_between_regions: u32,
+    ) -> Result<DescriptorChain<GuestMemoryAtomic<GuestMemoryMmap>>> {
+        let descriptors_len = descriptors.len();
+        for (index, (type_, size)) in descriptors.into_iter().enumerate() {
+            let mut flags = 0;
+            if let DescriptorType::Writable = type_ {
+                flags |= VIRTQ_DESC_F_WRITE;
+            }
+            if index + 1 < descriptors_len {
+                flags |= VIRTQ_DESC_F_NEXT;
+            }
+
+            let index = index as u16;
+            let desc = virtq_desc {
+                addr: buffers_start_addr.raw_value().into(),
+                len: size.into(),
+                flags: flags.into(),
+                next: (index + 1).into(),
+            };
+
+            let offset = size + spaces_between_regions;
+            buffers_start_addr = buffers_start_addr
+                .checked_add(u64::from(offset))
+                .ok_or(Error::InvalidChain)?;
+
+            let _ = memory.write_obj(
+                desc,
+                descriptor_array_addr
+                    .checked_add(u64::from(index) * std::mem::size_of::<virtq_desc>() as u64)
+                    .ok_or(Error::InvalidChain)?,
+            );
+        }
+
+        DescriptorChain::checked_new(memory, descriptor_array_addr, 0x100, 0, None)
+            .ok_or(Error::InvalidChain)
+    }
 
     #[test]
     fn reader_test_simple_chain() {

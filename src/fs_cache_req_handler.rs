@@ -1,10 +1,10 @@
 use crate::fuse;
 use std::io;
 use std::os::unix::io::RawFd;
-use vhost_rs::vhost_user::message::{
+use vhost::vhost_user::message::{
     VhostUserFSSlaveMsg, VhostUserFSSlaveMsgFlags, VHOST_USER_FS_SLAVE_ENTRIES,
 };
-use vhost_rs::vhost_user::{SlaveFsCacheReq, VhostUserMasterReqHandler};
+use vhost::vhost_user::{SlaveFsCacheReq, VhostUserMasterReqHandler};
 
 /// Trait for virtio-fs cache requests operations.  This is mainly used to hide
 /// vhost-user details from virtio-fs's fuse part.

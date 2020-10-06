@@ -10,14 +10,13 @@ clap = { version = "2.33.3", features=["wrap_help"] }
 epoll = ">=4.0.1"
 futures = { version = "0.3.5", features = ["thread-pool"] }
 libc = "0.2.79"
-log = "0.4.11"
+log = "0.4.6"
 # Match the version in vmm
 seccomp = { git = "https://github.com/firecracker-microvm/firecracker", tag = "v0.22.0" }
 tempdir = "0.3.7"
-virtio-bindings = { version = "0.1", features = ["virtio-v5_0_0"]}
-virtio-devices = { path = "../virtio-devices" }
-vhost_rs = { git = "https://github.com/rust-vmm/vhost", branch = "master", package = "vhost", features = ["vhost-user-slave"] }
-vhost_user_backend = { path = "../vhost_user_backend"}
-vm-memory = "0.3.0"
-vm-virtio = { path = "../vm-virtio" }
-vmm-sys-util = "0.6.1"
+vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend" }
+vhost = { git = "https://github.com/rust-vmm/vhost", features = ["vhost-user-slave"] }
+virtio-bindings = { version = "0.1", features = ["virtio-v5_0_0"] }
+vm-memory = ">=0.3.0"
+vm-virtio = { git = "https://github.com/rust-vmm/vm-virtio" }
+vmm-sys-util = ">=0.4.0"
