@@ -1,0 +1,13 @@
+workflow:
+  rules:
+    - if: $CI_MERGE_REQUEST_ID            # Execute jobs in merge request context
+    - if: $CI_COMMIT_BRANCH == 'main'     # Execute jobs when a new commit is pushed to main branch
+
+image: "rust:latest"
+
+test:cargo:
+  script:
+    - rustc --version && cargo --version  # Print version info for debugging
+    - rustup component add clippy
+    - cargo build --verbose
+    - cargo clippy --verbose
