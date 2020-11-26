@@ -23,7 +23,7 @@ impl convert::From<seccomp::Error> for Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "vhost_user_fs_seccomp_error: {:?}", self)
+        write!(f, "virtiofsd_seccomp_error: {:?}", self)
     }
 }
 

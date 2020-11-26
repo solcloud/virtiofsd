@@ -60,7 +60,7 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "vhost_user_fs_sandbox_error: {:?}", self)
+        write!(f, "virtiofsd_sandbox_error: {:?}", self)
     }
 }
 
@@ -125,7 +125,7 @@ impl Sandbox {
         // Bind-mount `/proc/self/fd` info a temporary directory, preventing access to ancestor
         // directories.
         let c_proc_self_fd = CString::new("/proc/self/fd").unwrap();
-        let tmp_dir = TempDir::new("vhostuserfs-")
+        let tmp_dir = TempDir::new("virtiofsd-")
             .map_err(|_| Error::CreateTempDir(std::io::Error::last_os_error()))?;
         let c_tmp_dir = CString::new(tmp_dir.into_path().to_str().unwrap()).unwrap();
         let ret = unsafe {

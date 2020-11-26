@@ -13,18 +13,18 @@ use std::{convert, error, fmt, io, process};
 use vhost::vhost_user::message::*;
 use vhost::vhost_user::{Listener, SlaveFsCacheReq};
 use vhost_user_backend::{VhostUserBackend, VhostUserDaemon, Vring};
-use vhost_user_fs::descriptor_utils::Error as VufDescriptorError;
-use vhost_user_fs::descriptor_utils::{Reader, Writer};
-use vhost_user_fs::filesystem::FileSystem;
-use vhost_user_fs::passthrough::{self, PassthroughFs};
-use vhost_user_fs::sandbox::Sandbox;
-use vhost_user_fs::seccomp::enable_seccomp;
-use vhost_user_fs::server::Server;
-use vhost_user_fs::Error as VhostUserFsError;
 use virtio_bindings::bindings::virtio_net::*;
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
+use virtiofsd_rs::descriptor_utils::Error as VufDescriptorError;
+use virtiofsd_rs::descriptor_utils::{Reader, Writer};
+use virtiofsd_rs::filesystem::FileSystem;
+use virtiofsd_rs::passthrough::{self, PassthroughFs};
+use virtiofsd_rs::sandbox::Sandbox;
+use virtiofsd_rs::seccomp::enable_seccomp;
+use virtiofsd_rs::server::Server;
+use virtiofsd_rs::Error as VhostUserFsError;
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
 use vm_virtio::Queue;
 use vmm_sys_util::eventfd::EventFd;
@@ -67,7 +67,7 @@ enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "vhost_user_fs_error: {:?}", self)
+        write!(f, "virtiofsd_error: {:?}", self)
     }
 }
 
@@ -292,10 +292,10 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend for VhostUserFsBack
 }
 
 fn main() {
-    let cmd_arguments = App::new("vhost-user-fs backend")
+    let cmd_arguments = App::new("virtiofsd backend")
         .version(crate_version!())
         .author(crate_authors!())
-        .about("Launch a vhost-user-fs backend.")
+        .about("Launch a virtiofsd backend.")
         .arg(
             Arg::with_name("shared-dir")
                 .long("shared-dir")
@@ -406,7 +406,7 @@ fn main() {
     ));
 
     let mut daemon =
-        VhostUserDaemon::new(String::from("vhost-user-fs-backend"), fs_backend.clone()).unwrap();
+        VhostUserDaemon::new(String::from("virtiofsd-backend"), fs_backend.clone()).unwrap();
 
     if let Err(e) = daemon.start(listener) {
         error!("Failed to start daemon: {:?}", e);
