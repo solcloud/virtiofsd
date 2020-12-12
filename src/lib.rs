@@ -12,6 +12,7 @@ pub mod fs_cache_req_handler;
 pub mod fuse;
 pub mod multikey;
 pub mod passthrough;
+pub mod read_dir;
 pub mod sandbox;
 pub mod seccomp;
 pub mod server;
@@ -25,6 +26,8 @@ pub enum Error {
     DecodeMessage(io::Error),
     /// Failed to encode protocol messages.
     EncodeMessage(io::Error),
+    /// Failed to flush protocol messages.
+    FlushMessage(io::Error),
     /// One or more parameters are missing.
     MissingParameter,
     /// A C string parameter is invalid.
@@ -44,6 +47,7 @@ impl fmt::Display for Error {
         match self {
             DecodeMessage(err) => write!(f, "failed to decode fuse message: {}", err),
             EncodeMessage(err) => write!(f, "failed to encode fuse message: {}", err),
+            FlushMessage(err) => write!(f, "failed to flush fuse message: {}", err),
             MissingParameter => write!(f, "one or more parameters are missing"),
             InvalidHeaderLength => write!(f, "the `len` field of the header is too small"),
             InvalidCString(err) => write!(f, "a c string parameter is invalid: {}", err),

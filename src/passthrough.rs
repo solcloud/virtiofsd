@@ -4,26 +4,24 @@
 
 use super::fs_cache_req_handler::FsCacheReqHandler;
 use crate::filesystem::{
-    Context, DirEntry, Entry, FileSystem, FsOptions, GetxattrReply, ListxattrReply, OpenOptions,
+    Context, Entry, FileSystem, FsOptions, GetxattrReply, ListxattrReply, OpenOptions,
     SetattrValid, ZeroCopyReader, ZeroCopyWriter,
 };
 use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
+use crate::read_dir::ReadDir;
 use std::collections::btree_map;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
-use std::mem::{self, size_of, MaybeUninit};
+use std::mem::MaybeUninit;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use vm_memory::ByteValued;
 
-const CURRENT_DIR_CSTR: &[u8] = b".\0";
-const PARENT_DIR_CSTR: &[u8] = b"..\0";
 const EMPTY_CSTR: &[u8] = b"\0";
 const PROC_CSTR: &[u8] = b"/proc/self/fd\0";
 
@@ -47,16 +45,6 @@ struct HandleData {
     inode: Inode,
     file: RwLock<File>,
 }
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
-struct LinuxDirent64 {
-    d_ino: libc::ino64_t,
-    d_off: libc::off64_t,
-    d_reclen: libc::c_ushort,
-    d_ty: libc::c_uchar,
-}
-unsafe impl ByteValued for LinuxDirent64 {}
 
 macro_rules! scoped_cred {
     ($name:ident, $ty:ty, $syscall_nr:expr) => {
@@ -333,6 +321,16 @@ impl PassthroughFs {
         vec![self.proc_self_fd.as_raw_fd()]
     }
 
+    fn find_handle(&self, handle: Handle, inode: Inode) -> io::Result<Arc<HandleData>> {
+        self.handles
+            .read()
+            .unwrap()
+            .get(&handle)
+            .filter(|hd| hd.inode == inode)
+            .map(Arc::clone)
+            .ok_or_else(ebadf)
+    }
+
     fn open_inode(&self, inode: Inode, mut flags: i32) -> io::Result<File> {
         let data = self
             .inodes
@@ -447,110 +445,6 @@ impl PassthroughFs {
             attr_timeout: self.cfg.attr_timeout,
             entry_timeout: self.cfg.entry_timeout,
         })
-    }
-
-    fn do_readdir<F>(
-        &self,
-        inode: Inode,
-        handle: Handle,
-        size: u32,
-        offset: u64,
-        mut add_entry: F,
-    ) -> io::Result<()>
-    where
-        F: FnMut(DirEntry) -> io::Result<usize>,
-    {
-        if size == 0 {
-            return Ok(());
-        }
-
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
-
-        let mut buf = vec![0; size as usize];
-
-        {
-            // Since we are going to work with the kernel offset, we have to acquire the file lock
-            // for both the `lseek64` and `getdents64` syscalls to ensure that no other thread
-            // changes the kernel offset while we are using it.
-            let dir = data.file.write().unwrap();
-
-            // Safe because this doesn't modify any memory and we check the return value.
-            let res =
-                unsafe { libc::lseek64(dir.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET) };
-            if res < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            // Safe because the kernel guarantees that it will only write to `buf` and we check the
-            // return value.
-            let res = unsafe {
-                libc::syscall(
-                    libc::SYS_getdents64,
-                    dir.as_raw_fd(),
-                    buf.as_mut_ptr() as *mut LinuxDirent64,
-                    size as libc::c_int,
-                )
-            };
-            if res < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            buf.resize(res as usize, 0);
-
-            // Explicitly drop the lock so that it's not held while we fill in the fuse buffer.
-            mem::drop(dir);
-        }
-
-        let mut rem = &buf[..];
-        while !rem.is_empty() {
-            // We only use debug asserts here because these values are coming from the kernel and we
-            // trust them implicitly.
-            debug_assert!(
-                rem.len() >= size_of::<LinuxDirent64>(),
-                "not enough space left in `rem`"
-            );
-
-            let (front, back) = rem.split_at(size_of::<LinuxDirent64>());
-
-            let dirent64 =
-                LinuxDirent64::from_slice(front).expect("unable to get LinuxDirent64 from slice");
-
-            let namelen = dirent64.d_reclen as usize - size_of::<LinuxDirent64>();
-            debug_assert!(namelen <= back.len(), "back is smaller than `namelen`");
-
-            let name = &back[..namelen];
-            let res = if name.starts_with(CURRENT_DIR_CSTR) || name.starts_with(PARENT_DIR_CSTR) {
-                // We don't want to report the "." and ".." entries. However, returning `Ok(0)` will
-                // break the loop so return `Ok` with a non-zero value instead.
-                Ok(1)
-            } else {
-                add_entry(DirEntry {
-                    ino: dirent64.d_ino,
-                    offset: dirent64.d_off as u64,
-                    type_: u32::from(dirent64.d_ty),
-                    name,
-                })
-            };
-
-            debug_assert!(
-                rem.len() >= dirent64.d_reclen as usize,
-                "rem is smaller than `d_reclen`"
-            );
-
-            match res {
-                Ok(0) => break,
-                Ok(_) => rem = &rem[dirent64.d_reclen as usize..],
-                Err(e) => return Err(e),
-            }
-        }
-
-        Ok(())
     }
 
     fn do_open(&self, inode: Inode, flags: u32) -> io::Result<(Option<Handle>, OpenOptions)> {
@@ -669,6 +563,7 @@ fn forget_one(
 impl FileSystem for PassthroughFs {
     type Inode = Inode;
     type Handle = Handle;
+    type DirIter = ReadDir<Vec<u8>>;
 
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         let root = CString::new(self.cfg.root_dir.as_str()).expect("CString::new failed");
@@ -814,45 +709,27 @@ impl FileSystem for PassthroughFs {
         self.do_unlink(parent, name, libc::AT_REMOVEDIR)
     }
 
-    fn readdir<F>(
+    fn readdir(
         &self,
         _ctx: Context,
         inode: Inode,
         handle: Handle,
         size: u32,
         offset: u64,
-        add_entry: F,
-    ) -> io::Result<()>
-    where
-        F: FnMut(DirEntry) -> io::Result<usize>,
-    {
-        self.do_readdir(inode, handle, size, offset, add_entry)
-    }
+    ) -> io::Result<Self::DirIter> {
+        if size == 0 {
+            return Ok(ReadDir::default());
+        }
+        let data = self.find_handle(handle, inode)?;
 
-    fn readdirplus<F>(
-        &self,
-        _ctx: Context,
-        inode: Inode,
-        handle: Handle,
-        size: u32,
-        offset: u64,
-        mut add_entry: F,
-    ) -> io::Result<()>
-    where
-        F: FnMut(DirEntry, Entry) -> io::Result<usize>,
-    {
-        self.do_readdir(inode, handle, size, offset, |dir_entry| {
-            // Safe because the kernel guarantees that the buffer is nul-terminated. Additionally,
-            // the kernel will pad the name with '\0' bytes up to 8-byte alignment and there's no
-            // way for us to know exactly how many padding bytes there are. This would cause
-            // `CStr::from_bytes_with_nul` to return an error because it would think there are
-            // interior '\0' bytes. We trust the kernel to provide us with properly formatted data
-            // so we'll just skip the checks here.
-            let name = unsafe { CStr::from_bytes_with_nul_unchecked(dir_entry.name) };
-            let entry = self.do_lookup(inode, name)?;
+        let buf = vec![0; size as usize];
 
-            add_entry(dir_entry, entry)
-        })
+        // Since we are going to work with the kernel offset, we have to acquire the file
+        // lock for both the `lseek64` and `getdents64` syscalls to ensure that no other
+        // thread changes the kernel offset while we are using it.
+        let dir = data.file.write().unwrap();
+
+        ReadDir::new(&*dir, offset as libc::off64_t, buf)
     }
 
     fn open(
@@ -983,14 +860,7 @@ impl FileSystem for PassthroughFs {
         _lock_owner: Option<u64>,
         _flags: u32,
     ) -> io::Result<usize> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
+        let data = self.find_handle(handle, inode)?;
 
         // This is safe because write_from uses preadv64, so the underlying file descriptor
         // offset is not affected by this operation.
@@ -1017,14 +887,7 @@ impl FileSystem for PassthroughFs {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
         }
 
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
+        let data = self.find_handle(handle, inode)?;
 
         // This is safe because read_to uses pwritev64, so the underlying file descriptor
         // offset is not affected by this operation.
@@ -1064,14 +927,7 @@ impl FileSystem for PassthroughFs {
 
         // If we have a handle then use it otherwise get a new fd from the inode.
         let data = if let Some(handle) = handle {
-            let hd = self
-                .handles
-                .read()
-                .unwrap()
-                .get(&handle)
-                .filter(|hd| hd.inode == inode)
-                .map(Arc::clone)
-                .ok_or_else(ebadf)?;
+            let hd = self.find_handle(handle, inode)?;
 
             let fd = hd.file.write().unwrap().as_raw_fd();
             Data::Handle(hd, fd)
@@ -1369,14 +1225,7 @@ impl FileSystem for PassthroughFs {
         handle: Handle,
         _lock_owner: u64,
     ) -> io::Result<()> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
+        let data = self.find_handle(handle, inode)?;
 
         // Since this method is called whenever an fd is closed in the client, we can emulate that
         // behavior by doing the same thing (dup-ing the fd and then immediately closing it). Safe
@@ -1396,14 +1245,7 @@ impl FileSystem for PassthroughFs {
     }
 
     fn fsync(&self, _ctx: Context, inode: Inode, datasync: bool, handle: Handle) -> io::Result<()> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
+        let data = self.find_handle(handle, inode)?;
 
         let fd = data.file.write().unwrap().as_raw_fd();
 
@@ -1612,14 +1454,7 @@ impl FileSystem for PassthroughFs {
         offset: u64,
         length: u64,
     ) -> io::Result<()> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
+        let data = self.find_handle(handle, inode)?;
 
         let fd = data.file.write().unwrap().as_raw_fd();
         // Safe because this doesn't modify any memory and we check the return value.
@@ -1646,14 +1481,7 @@ impl FileSystem for PassthroughFs {
         offset: u64,
         whence: u32,
     ) -> io::Result<u64> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
+        let data = self.find_handle(handle, inode)?;
 
         let fd = data.file.write().unwrap().as_raw_fd();
 
@@ -1678,26 +1506,12 @@ impl FileSystem for PassthroughFs {
         len: u64,
         flags: u64,
     ) -> io::Result<usize> {
-        let data_in = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle_in)
-            .filter(|hd| hd.inode == inode_in)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
+        let data_in = self.find_handle(handle_in, inode_in)?;
 
         // Take just a read lock as we're not going to alter the file descriptor offset.
         let fd_in = data_in.file.read().unwrap().as_raw_fd();
 
-        let data_out = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle_out)
-            .filter(|hd| hd.inode == inode_out)
-            .map(Arc::clone)
-            .ok_or_else(ebadf)?;
+        let data_out = self.find_handle(handle_out, inode_out)?;
 
         // Take just a read lock as we're not going to alter the file descriptor offset.
         let fd_out = data_out.file.read().unwrap().as_raw_fd();
