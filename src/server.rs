@@ -18,6 +18,7 @@ use std::mem::{size_of, MaybeUninit};
 use std::time::Duration;
 use vm_memory::ByteValued;
 
+const FUSE_BUFFER_HEADER_SIZE: u32 = 0x1000;
 const MAX_BUFFER_SIZE: u32 = 1 << 20;
 const DIRENT_PADDING: [u8; 8] = [0; 8];
 
@@ -74,7 +75,7 @@ impl<F: FileSystem + Sync> Server<F> {
     ) -> Result<usize> {
         let in_header: InHeader = r.read_obj().map_err(Error::DecodeMessage)?;
 
-        if in_header.len > MAX_BUFFER_SIZE {
+        if in_header.len > (MAX_BUFFER_SIZE + FUSE_BUFFER_HEADER_SIZE) {
             return reply_error(
                 io::Error::from_raw_os_error(libc::ENOMEM),
                 in_header.unique,
