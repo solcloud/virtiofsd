@@ -232,6 +232,21 @@ pub struct Config {
     ///
     /// The default is `None`.
     pub proc_sfd_rawfd: Option<RawFd>,
+
+    /// Whether the file system should announce submounts to the guest.  Not doing so means that
+    /// the FUSE client may see st_ino collisions: This stat field is passed through, so if the
+    /// shared directory encompasses multiple mounts, some inodes (in different file systems) may
+    /// have the same st_ino value.  If the FUSE client does not know these inodes are in different
+    /// file systems, then it will be oblivious to this collision.
+    /// By announcing submount points, the FUSE client can create virtual submounts with distinct
+    /// st_dev values where necessary, so that the combination of st_dev and st_ino will stay
+    /// unique.
+    /// On the other hand, it may be undesirable to let the client know the shared directory's
+    /// submount structure.  The user needs to decide which drawback weighs heavier for them, which
+    /// is why this is a configurable option.
+    ///
+    /// The default is `true`.
+    pub announce_submounts: bool,
 }
 
 impl Default for Config {
@@ -244,6 +259,7 @@ impl Default for Config {
             root_dir: String::from("/"),
             xattr: false,
             proc_sfd_rawfd: None,
+            announce_submounts: true,
         }
     }
 }
