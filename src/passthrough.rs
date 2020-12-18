@@ -442,6 +442,7 @@ impl PassthroughFs {
             inode,
             generation: 0,
             attr: st,
+            attr_flags: 0,
             attr_timeout: self.cfg.attr_timeout,
             entry_timeout: self.cfg.entry_timeout,
         })

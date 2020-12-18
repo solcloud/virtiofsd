@@ -1043,6 +1043,7 @@ impl<F: FileSystem + Sync> Server<F> {
                 inode: 0,
                 generation: 0,
                 attr,
+                attr_flags: 0,
                 attr_timeout: Duration::from_secs(0),
                 entry_timeout: Duration::from_secs(0),
             }
@@ -1240,7 +1241,7 @@ impl<F: FileSystem + Sync> Server<F> {
                     attr_valid: entry.attr_timeout.as_secs(),
                     entry_valid_nsec: entry.entry_timeout.subsec_nanos(),
                     attr_valid_nsec: entry.attr_timeout.subsec_nanos(),
-                    attr: entry.attr.into(),
+                    attr: Attr::with_flags(entry.attr, entry.attr_flags),
                 };
                 let open_out = OpenOut {
                     fh: handle.map(Into::into).unwrap_or(0),
