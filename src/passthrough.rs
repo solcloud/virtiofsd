@@ -36,6 +36,8 @@ struct InodeAltKey {
 
 struct InodeData {
     inode: Inode,
+    #[allow(dead_code)]
+    key: InodeAltKey,
     // Most of these aren't actually files but ¯\_(ツ)_/¯.
     file: File,
     refcount: AtomicU64,
@@ -430,6 +432,10 @@ impl PassthroughFs {
                 },
                 Arc::new(InodeData {
                     inode,
+                    key: InodeAltKey {
+                        ino: st.st_ino,
+                        dev: st.st_dev,
+                    },
                     file: f,
                     refcount: AtomicU64::new(1),
                 }),
@@ -604,6 +610,10 @@ impl FileSystem for PassthroughFs {
             },
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
+                key: InodeAltKey {
+                    ino: st.st_ino,
+                    dev: st.st_dev,
+                },
                 file: f,
                 refcount: AtomicU64::new(2),
             }),
