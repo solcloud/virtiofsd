@@ -292,6 +292,10 @@ pub struct PassthroughFs {
     // `cfg.writeback` is true and `init` was called with `FsOptions::WRITEBACK_CACHE`.
     writeback: AtomicBool,
 
+    // Whether to announce submounts (i.e., whether the guest supports them and whether they are
+    // enabled in the configuration)
+    announce_submounts: AtomicBool,
+
     cfg: Config,
 }
 
@@ -331,6 +335,7 @@ impl PassthroughFs {
             proc_self_fd,
 
             writeback: AtomicBool::new(false),
+            announce_submounts: AtomicBool::new(false),
             cfg,
         })
     }
@@ -639,6 +644,13 @@ impl FileSystem for PassthroughFs {
         if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {
             opts |= FsOptions::WRITEBACK_CACHE;
             self.writeback.store(true, Ordering::Relaxed);
+        }
+        if self.cfg.announce_submounts {
+            if capable.contains(FsOptions::SUBMOUNTS) {
+                self.announce_submounts.store(true, Ordering::Relaxed);
+            } else {
+                eprintln!("Warning: Cannot announce submounts, client does not support it");
+            }
         }
         Ok(opts)
     }
