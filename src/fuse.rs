@@ -148,6 +148,9 @@ const NO_OPENDIR_SUPPORT: u32 = 16_777_216;
 /// Only invalidate cached pages on explicit request
 const EXPLICIT_INVAL_DATA: u32 = 33_554_432;
 
+/// Kernel supports auto-mounting directory submounts
+const SUBMOUNTS: u32 = 134_217_728;
+
 bitflags! {
     /// A bitfield passed in as a parameter to and returned from the `init` method of the
     /// `FileSystem` trait.
@@ -351,6 +354,12 @@ bitflags! {
         ///
         /// This feature is not currently supported.
         const EXPLICIT_INVAL_DATA = EXPLICIT_INVAL_DATA;
+
+        /// Indicates that the kernel supports the FUSE_ATTR_SUBMOUNT flag.
+        ///
+        /// Setting (or not setting) this flag in the `FsOptions` returned from the `init` method
+        /// has no effect.
+        const SUBMOUNTS = SUBMOUNTS;
     }
 }
 
