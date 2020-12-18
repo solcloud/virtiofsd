@@ -36,7 +36,6 @@ struct InodeAltKey {
 
 struct InodeData {
     inode: Inode,
-    #[allow(dead_code)]
     key: InodeAltKey,
     // Most of these aren't actually files but ¯\_(ツ)_/¯.
     file: File,
@@ -428,7 +427,16 @@ impl PassthroughFs {
         // Safe because we just opened this fd.
         let f = unsafe { File::from_raw_fd(fd) };
 
+        let mut attr_flags: u32 = 0;
+
         let st = stat(&f)?;
+
+        if st.st_mode & libc::S_IFDIR != 0
+            && self.announce_submounts.load(Ordering::Relaxed)
+            && st.st_dev != p.key.dev
+        {
+            attr_flags |= fuse::ATTR_SUBMOUNT;
+        }
 
         let altkey = InodeAltKey {
             ino: st.st_ino,
@@ -469,7 +477,7 @@ impl PassthroughFs {
             inode,
             generation: 0,
             attr: st,
-            attr_flags: 0,
+            attr_flags,
             attr_timeout: self.cfg.attr_timeout,
             entry_timeout: self.cfg.entry_timeout,
         })

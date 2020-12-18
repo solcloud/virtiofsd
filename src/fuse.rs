@@ -452,7 +452,6 @@ pub const FUSE_COMPAT_22_INIT_OUT_SIZE: u32 = 24;
 // Attr.flags flags.
 
 /// Object is a submount root
-#[allow(dead_code)]
 pub const ATTR_SUBMOUNT: u32 = 1;
 
 // Message definitions follow.  It is safe to implement ByteValued for all of these
