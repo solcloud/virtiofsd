@@ -12,7 +12,6 @@ const EMPTY_CSTR: &[u8] = b"\0";
 
 pub struct StatExt {
     pub st: libc::stat64,
-    #[allow(dead_code)]
     pub mnt_id: u64,
 }
 

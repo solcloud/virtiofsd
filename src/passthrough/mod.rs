@@ -38,6 +38,7 @@ type Handle = u64;
 struct InodeAltKey {
     ino: libc::ino64_t,
     dev: libc::dev_t,
+    mnt_id: u64,
 }
 
 struct InodeData {
@@ -459,6 +460,7 @@ impl PassthroughFs {
         let altkey = InodeAltKey {
             ino: st.st.st_ino,
             dev: st.st.st_dev,
+            mnt_id: st.mnt_id,
         };
         let data = self.inodes.read().unwrap().get_alt(&altkey).map(Arc::clone);
 
@@ -476,12 +478,14 @@ impl PassthroughFs {
                 InodeAltKey {
                     ino: st.st.st_ino,
                     dev: st.st.st_dev,
+                    mnt_id: st.mnt_id,
                 },
                 Arc::new(InodeData {
                     inode,
                     key: InodeAltKey {
                         ino: st.st.st_ino,
                         dev: st.st.st_dev,
+                        mnt_id: st.mnt_id,
                     },
                     file: f,
                     refcount: AtomicU64::new(1),
@@ -693,12 +697,14 @@ impl FileSystem for PassthroughFs {
             InodeAltKey {
                 ino: st.st.st_ino,
                 dev: st.st.st_dev,
+                mnt_id: st.mnt_id,
             },
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
                 key: InodeAltKey {
                     ino: st.st.st_ino,
                     dev: st.st.st_dev,
+                    mnt_id: st.mnt_id,
                 },
                 file: f,
                 refcount: AtomicU64::new(2),
