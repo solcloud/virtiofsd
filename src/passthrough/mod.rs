@@ -452,7 +452,7 @@ impl PassthroughFs {
 
         if st.st.st_mode & libc::S_IFDIR != 0
             && self.announce_submounts.load(Ordering::Relaxed)
-            && st.st.st_dev != p.key.dev
+            && (st.st.st_dev != p.key.dev || st.mnt_id != p.key.mnt_id)
         {
             attr_flags |= fuse::ATTR_SUBMOUNT;
         }
