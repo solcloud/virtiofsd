@@ -13,7 +13,7 @@ use crate::filesystem::{
 use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
 use crate::read_dir::ReadDir;
-use stat::{stat64, StatExt};
+use stat::{stat64, statx, StatExt};
 use std::borrow::Cow;
 use std::collections::btree_map;
 use std::collections::BTreeMap;
@@ -286,6 +286,9 @@ pub struct PassthroughFs {
     // enabled in the configuration)
     announce_submounts: AtomicBool,
 
+    // Whether the statx() system call is available.
+    use_statx: bool,
+
     cfg: Config,
 }
 
@@ -315,6 +318,12 @@ impl PassthroughFs {
         // Safe because we just opened this fd or it was provided by our caller.
         let proc_self_fd = unsafe { File::from_raw_fd(fd) };
 
+        // Check for statx() system call
+        let use_statx = match statx(&proc_self_fd) {
+            Ok(_) => true,
+            Err(err) => !matches!(err.raw_os_error(), Some(libc::ENOSYS)),
+        };
+
         let mut fs = PassthroughFs {
             inodes: RwLock::new(MultikeyBTreeMap::new()),
             next_inode: AtomicU64::new(fuse::ROOT_ID + 1),
@@ -323,6 +332,7 @@ impl PassthroughFs {
             proc_self_fd,
             writeback: AtomicBool::new(false),
             announce_submounts: AtomicBool::new(false),
+            use_statx,
             cfg,
         };
 
@@ -344,7 +354,11 @@ impl PassthroughFs {
     }
 
     fn stat(&self, f: &File) -> io::Result<StatExt> {
-        stat64(f)
+        if self.use_statx {
+            statx(f)
+        } else {
+            stat64(f)
+        }
     }
 
     fn find_handle(&self, handle: Handle, inode: Inode) -> io::Result<Arc<HandleData>> {
