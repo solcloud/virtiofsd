@@ -16,7 +16,7 @@ pub struct StatExt {
     pub mnt_id: u64,
 }
 
-pub fn stat(f: &File) -> io::Result<StatExt> {
+pub fn stat64(f: &File) -> io::Result<StatExt> {
     let mut st = MaybeUninit::<libc::stat64>::zeroed();
 
     // Safe because this is a constant value and a valid C string.

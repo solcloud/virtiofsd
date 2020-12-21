@@ -13,7 +13,7 @@ use crate::filesystem::{
 use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
 use crate::read_dir::ReadDir;
-use stat::stat;
+use stat::{stat64, StatExt};
 use std::borrow::Cow;
 use std::collections::btree_map;
 use std::collections::BTreeMap;
@@ -343,6 +343,10 @@ impl PassthroughFs {
         vec![self.proc_self_fd.as_raw_fd()]
     }
 
+    fn stat(&self, f: &File) -> io::Result<StatExt> {
+        stat64(f)
+    }
+
     fn find_handle(&self, handle: Handle, inode: Inode) -> io::Result<Arc<HandleData>> {
         self.handles
             .read()
@@ -429,7 +433,7 @@ impl PassthroughFs {
 
         let mut attr_flags: u32 = 0;
 
-        let st = stat(&f)?;
+        let st = self.stat(&f)?;
 
         if st.st.st_mode & libc::S_IFDIR != 0
             && self.announce_submounts.load(Ordering::Relaxed)
@@ -540,7 +544,7 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = stat(&data.file)?.st;
+        let st = self.stat(&data.file)?.st;
 
         Ok((st, self.cfg.attr_timeout))
     }
@@ -660,7 +664,7 @@ impl FileSystem for PassthroughFs {
         // Safe because we just opened this fd above.
         let f = unsafe { File::from_raw_fd(fd) };
 
-        let st = stat(&f)?;
+        let st = self.stat(&f)?;
 
         // Safe because this doesn't modify any memory and there is no need to check the return
         // value because this system call always succeeds. We need to clear the umask here because
@@ -1373,7 +1377,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = stat(&data.file)?.st;
+        let st = self.stat(&data.file)?.st;
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
         if mode == libc::F_OK {
