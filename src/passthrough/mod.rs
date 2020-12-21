@@ -431,16 +431,16 @@ impl PassthroughFs {
 
         let st = stat(&f)?;
 
-        if st.st_mode & libc::S_IFDIR != 0
+        if st.st.st_mode & libc::S_IFDIR != 0
             && self.announce_submounts.load(Ordering::Relaxed)
-            && st.st_dev != p.key.dev
+            && st.st.st_dev != p.key.dev
         {
             attr_flags |= fuse::ATTR_SUBMOUNT;
         }
 
         let altkey = InodeAltKey {
-            ino: st.st_ino,
-            dev: st.st_dev,
+            ino: st.st.st_ino,
+            dev: st.st.st_dev,
         };
         let data = self.inodes.read().unwrap().get_alt(&altkey).map(Arc::clone);
 
@@ -456,14 +456,14 @@ impl PassthroughFs {
             self.inodes.write().unwrap().insert(
                 inode,
                 InodeAltKey {
-                    ino: st.st_ino,
-                    dev: st.st_dev,
+                    ino: st.st.st_ino,
+                    dev: st.st.st_dev,
                 },
                 Arc::new(InodeData {
                     inode,
                     key: InodeAltKey {
-                        ino: st.st_ino,
-                        dev: st.st_dev,
+                        ino: st.st.st_ino,
+                        dev: st.st.st_dev,
                     },
                     file: f,
                     refcount: AtomicU64::new(1),
@@ -476,7 +476,7 @@ impl PassthroughFs {
         Ok(Entry {
             inode,
             generation: 0,
-            attr: st,
+            attr: st.st,
             attr_flags,
             attr_timeout: self.cfg.attr_timeout,
             entry_timeout: self.cfg.entry_timeout,
@@ -540,7 +540,7 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = stat(&data.file)?;
+        let st = stat(&data.file)?.st;
 
         Ok((st, self.cfg.attr_timeout))
     }
@@ -673,14 +673,14 @@ impl FileSystem for PassthroughFs {
         inodes.insert(
             fuse::ROOT_ID,
             InodeAltKey {
-                ino: st.st_ino,
-                dev: st.st_dev,
+                ino: st.st.st_ino,
+                dev: st.st.st_dev,
             },
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
                 key: InodeAltKey {
-                    ino: st.st_ino,
-                    dev: st.st_dev,
+                    ino: st.st.st_ino,
+                    dev: st.st.st_dev,
                 },
                 file: f,
                 refcount: AtomicU64::new(2),
@@ -1373,7 +1373,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = stat(&data.file)?;
+        let st = stat(&data.file)?.st;
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
         if mode == libc::F_OK {

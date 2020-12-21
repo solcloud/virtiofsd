@@ -10,7 +10,13 @@ use std::os::unix::io::AsRawFd;
 
 const EMPTY_CSTR: &[u8] = b"\0";
 
-pub fn stat(f: &File) -> io::Result<libc::stat64> {
+pub struct StatExt {
+    pub st: libc::stat64,
+    #[allow(dead_code)]
+    pub mnt_id: u64,
+}
+
+pub fn stat(f: &File) -> io::Result<StatExt> {
     let mut st = MaybeUninit::<libc::stat64>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
@@ -27,8 +33,11 @@ pub fn stat(f: &File) -> io::Result<libc::stat64> {
         )
     };
     if res >= 0 {
-        // Safe because the kernel guarantees that the struct is now fully initialized.
-        Ok(unsafe { st.assume_init() })
+        Ok(StatExt {
+            // Safe because the kernel guarantees that the struct is now fully initialized.
+            st: unsafe { st.assume_init() },
+            mnt_id: 0,
+        })
     } else {
         Err(io::Error::last_os_error())
     }
