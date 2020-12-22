@@ -18,6 +18,10 @@ pub enum Error {
     ChdirOldRoot(io::Error),
     /// Failed to change to the new root directory.
     ChdirNewRoot(io::Error),
+    /// Call to libc::chroot returned an error.
+    Chroot(io::Error),
+    /// Failed to change to the root directory after the chroot call.
+    ChrootChdir(io::Error),
     /// Failed to clean the properties of the mount point.
     CleanMount(io::Error),
     /// Failed to create a temporary directory.
@@ -64,6 +68,17 @@ impl fmt::Display for Error {
     }
 }
 
+/// Mechanism to be used for setting up the sandbox.
+#[derive(PartialEq)]
+pub enum SandboxMode {
+    /// Create the sandbox using Linux namespaces.
+    Namespace,
+    /// Create the sandbox using chroot.
+    Chroot,
+    /// Don't attempt to isolate the process inside a sandbox.
+    None,
+}
+
 /// A helper for creating a sandbox for isolating the service.
 pub struct Sandbox {
     /// The directory that is going to be shared with the VM. The sandbox will be constructed on top
@@ -71,13 +86,16 @@ pub struct Sandbox {
     shared_dir: String,
     /// A file descriptor for `/proc/self/fd` obtained from the sandboxed context.
     proc_self_fd: Option<RawFd>,
+    /// Mechanism to be used for setting up the sandbox.
+    sandbox_mode: SandboxMode,
 }
 
 impl Sandbox {
-    pub fn new(shared_dir: String) -> Self {
+    pub fn new(shared_dir: String, sandbox_mode: SandboxMode) -> Self {
         Sandbox {
             shared_dir,
             proc_self_fd: None,
+            sandbox_mode,
         }
     }
 
@@ -278,11 +296,7 @@ impl Sandbox {
         }
     }
 
-    /// Set up sandbox, fork and jump into it.
-    ///
-    /// On success, the returned value will be the PID of the child for the parent and `None` for
-    /// the child itself, with the latter running isolated in `self.shared_dir`.
-    pub fn enter(&mut self) -> Result<Option<i32>, Error> {
+    pub fn enter_namespace(&mut self) -> Result<Option<i32>, Error> {
         let uid = unsafe { libc::geteuid() };
 
         let flags = if uid == 0 {
@@ -318,7 +332,49 @@ impl Sandbox {
         }
     }
 
+    pub fn enter_chroot(&mut self) -> Result<Option<i32>, Error> {
+        let c_proc_self_fd = CString::new("/proc/self/fd").unwrap();
+        let proc_self_fd = unsafe { libc::open(c_proc_self_fd.as_ptr(), libc::O_PATH) };
+        if proc_self_fd < 0 {
+            return Err(Error::OpenProcSelfFd(std::io::Error::last_os_error()));
+        }
+        self.proc_self_fd = Some(proc_self_fd);
+
+        let c_shared_dir = CString::new(self.shared_dir.clone()).unwrap();
+        let ret = unsafe { libc::chroot(c_shared_dir.as_ptr()) };
+        if ret != 0 {
+            return Err(Error::Chroot(std::io::Error::last_os_error()));
+        }
+
+        let c_root_dir = CString::new("/").unwrap();
+        let ret = unsafe { libc::chdir(c_root_dir.as_ptr()) };
+        if ret != 0 {
+            return Err(Error::ChrootChdir(std::io::Error::last_os_error()));
+        }
+
+        Ok(None)
+    }
+
+    /// Set up sandbox, fork and jump into it.
+    ///
+    /// On success, the returned value will be the PID of the child for the parent and `None` for
+    /// the child itself, with the latter running isolated in `self.shared_dir`.
+    pub fn enter(&mut self) -> Result<Option<i32>, Error> {
+        match self.sandbox_mode {
+            SandboxMode::Namespace => return self.enter_namespace(),
+            SandboxMode::Chroot => return self.enter_chroot(),
+            SandboxMode::None => Ok(None),
+        }
+    }
+
     pub fn get_proc_self_fd(&self) -> Option<RawFd> {
         self.proc_self_fd
+    }
+
+    pub fn get_root_dir(&self) -> String {
+        match self.sandbox_mode {
+            SandboxMode::Namespace | SandboxMode::Chroot => "/".to_string(),
+            SandboxMode::None => self.shared_dir.clone(),
+        }
     }
 }
