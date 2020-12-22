@@ -304,7 +304,9 @@ impl Sandbox {
             0 => {
                 // This is the child. Request to receive SIGTERM on parent's death.
                 unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) };
-                self.setup_nofile_rlimit()?;
+                if uid == 0 {
+                    self.setup_nofile_rlimit()?;
+                }
                 self.setup_mounts()?;
                 Ok(None)
             }
