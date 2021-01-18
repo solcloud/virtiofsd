@@ -36,6 +36,7 @@ struct InodeAltKey {
 
 struct InodeData {
     inode: Inode,
+    key: InodeAltKey,
     // Most of these aren't actually files but ¯\_(ツ)_/¯.
     file: File,
     refcount: AtomicU64,
@@ -230,6 +231,21 @@ pub struct Config {
     ///
     /// The default is `None`.
     pub proc_sfd_rawfd: Option<RawFd>,
+
+    /// Whether the file system should announce submounts to the guest.  Not doing so means that
+    /// the FUSE client may see st_ino collisions: This stat field is passed through, so if the
+    /// shared directory encompasses multiple mounts, some inodes (in different file systems) may
+    /// have the same st_ino value.  If the FUSE client does not know these inodes are in different
+    /// file systems, then it will be oblivious to this collision.
+    /// By announcing submount points, the FUSE client can create virtual submounts with distinct
+    /// st_dev values where necessary, so that the combination of st_dev and st_ino will stay
+    /// unique.
+    /// On the other hand, it may be undesirable to let the client know the shared directory's
+    /// submount structure.  The user needs to decide which drawback weighs heavier for them, which
+    /// is why this is a configurable option.
+    ///
+    /// The default is `true`.
+    pub announce_submounts: bool,
 }
 
 impl Default for Config {
@@ -242,6 +258,7 @@ impl Default for Config {
             root_dir: String::from("/"),
             xattr: false,
             proc_sfd_rawfd: None,
+            announce_submounts: true,
         }
     }
 }
@@ -273,6 +290,10 @@ pub struct PassthroughFs {
     // Whether writeback caching is enabled for this directory. This will only be true when
     // `cfg.writeback` is true and `init` was called with `FsOptions::WRITEBACK_CACHE`.
     writeback: AtomicBool,
+
+    // Whether to announce submounts (i.e., whether the guest supports them and whether they are
+    // enabled in the configuration)
+    announce_submounts: AtomicBool,
 
     cfg: Config,
 }
@@ -313,6 +334,7 @@ impl PassthroughFs {
             proc_self_fd,
 
             writeback: AtomicBool::new(false),
+            announce_submounts: AtomicBool::new(false),
             cfg,
         })
     }
@@ -405,7 +427,16 @@ impl PassthroughFs {
         // Safe because we just opened this fd.
         let f = unsafe { File::from_raw_fd(fd) };
 
+        let mut attr_flags: u32 = 0;
+
         let st = stat(&f)?;
+
+        if st.st_mode & libc::S_IFDIR != 0
+            && self.announce_submounts.load(Ordering::Relaxed)
+            && st.st_dev != p.key.dev
+        {
+            attr_flags |= fuse::ATTR_SUBMOUNT;
+        }
 
         let altkey = InodeAltKey {
             ino: st.st_ino,
@@ -430,6 +461,10 @@ impl PassthroughFs {
                 },
                 Arc::new(InodeData {
                     inode,
+                    key: InodeAltKey {
+                        ino: st.st_ino,
+                        dev: st.st_dev,
+                    },
                     file: f,
                     refcount: AtomicU64::new(1),
                 }),
@@ -442,6 +477,7 @@ impl PassthroughFs {
             inode,
             generation: 0,
             attr: st,
+            attr_flags,
             attr_timeout: self.cfg.attr_timeout,
             entry_timeout: self.cfg.entry_timeout,
         })
@@ -603,6 +639,10 @@ impl FileSystem for PassthroughFs {
             },
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
+                key: InodeAltKey {
+                    ino: st.st_ino,
+                    dev: st.st_dev,
+                },
                 file: f,
                 refcount: AtomicU64::new(2),
             }),
@@ -612,6 +652,13 @@ impl FileSystem for PassthroughFs {
         if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {
             opts |= FsOptions::WRITEBACK_CACHE;
             self.writeback.store(true, Ordering::Relaxed);
+        }
+        if self.cfg.announce_submounts {
+            if capable.contains(FsOptions::SUBMOUNTS) {
+                self.announce_submounts.store(true, Ordering::Relaxed);
+            } else {
+                eprintln!("Warning: Cannot announce submounts, client does not support it");
+            }
         }
         Ok(opts)
     }

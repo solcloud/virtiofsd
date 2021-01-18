@@ -341,6 +341,11 @@ fn main() {
                 .possible_values(&["kill", "log", "trap", "none"])
                 .default_value("kill"),
         )
+        .arg(
+            Arg::with_name("no-announce-submounts")
+                .long("no-announce-submounts")
+                .help("Don't tell the guest which directories are mount points"),
+        )
         .get_matches();
 
     // Retrieve arguments
@@ -370,6 +375,7 @@ fn main() {
         "trap" => SeccompAction::Trap,
         _ => unreachable!(), // We told Arg possible_values
     };
+    let announce_submounts: bool = !cmd_arguments.is_present("no-announce-submounts");
 
     let listener = Listener::new(socket, true).unwrap();
 
@@ -384,6 +390,7 @@ fn main() {
                 root_dir: "/".to_string(),
                 xattr,
                 proc_sfd_rawfd: sandbox.get_proc_self_fd(),
+                announce_submounts,
                 ..Default::default()
             },
         }
@@ -391,6 +398,7 @@ fn main() {
         passthrough::Config {
             root_dir: shared_dir.to_string(),
             xattr,
+            announce_submounts,
             ..Default::default()
         }
     };
