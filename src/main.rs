@@ -315,7 +315,8 @@ fn main() {
                 .long("socket")
                 .help("vhost-user socket path")
                 .takes_value(true)
-                .min_values(1),
+                .min_values(1)
+                .required_unless("sock"),
         )
         .arg(
             Arg::with_name("thread-pool-size")
