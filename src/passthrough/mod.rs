@@ -12,6 +12,7 @@ use crate::filesystem::{
 use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
 use crate::read_dir::ReadDir;
+use std::borrow::Cow;
 use std::collections::btree_map;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
@@ -23,6 +24,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use xattrmap::{AppliedRule, XattrMap};
 
 const EMPTY_CSTR: &[u8] = b"\0";
 const PROC_CSTR: &[u8] = b"/proc/self/fd\0";
@@ -227,6 +229,9 @@ pub struct Config {
     /// The default value for this options is `false`.
     pub xattr: bool,
 
+    /// An optional translation layer for host<->guest Extended Attribute (xattr) names.
+    pub xattrmap: Option<XattrMap>,
+
     /// Optional file descriptor for /proc/self/fd. Callers can obtain a file descriptor and pass it
     /// here, so there's no need to open it in PassthroughFs::new(). This is specially useful for
     /// sandboxing.
@@ -259,6 +264,7 @@ impl Default for Config {
             writeback: false,
             root_dir: String::from("/"),
             xattr: false,
+            xattrmap: None,
             proc_sfd_rawfd: None,
             announce_submounts: true,
         }
@@ -557,6 +563,16 @@ impl PassthroughFs {
             Ok(())
         } else {
             Err(io::Error::last_os_error())
+        }
+    }
+
+    fn map_client_xattrname<'a>(&self, name: &'a CStr) -> std::io::Result<Cow<'a, CStr>> {
+        match &self.cfg.xattrmap {
+            Some(map) => match map.map_client_xattr(name).expect("unterminated mapping") {
+                AppliedRule::Deny => Err(io::Error::from_raw_os_error(libc::EPERM)),
+                AppliedRule::Pass(new_name) => Ok(new_name),
+            },
+            None => Ok(Cow::Borrowed(name)),
         }
     }
 }
@@ -1389,6 +1405,8 @@ impl FileSystem for PassthroughFs {
         // need to get a new fd.
         let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NONBLOCK)?;
 
+        let name = self.map_client_xattrname(name)?;
+
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
             libc::fsetxattr(
@@ -1422,6 +1440,8 @@ impl FileSystem for PassthroughFs {
         let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NONBLOCK)?;
 
         let mut buf = vec![0; size as usize];
+
+        let name = self.map_client_xattrname(name)?;
 
         // Safe because this will only modify the contents of `buf`.
         let res = unsafe {
@@ -1471,6 +1491,11 @@ impl FileSystem for PassthroughFs {
             Ok(ListxattrReply::Count(res as u32))
         } else {
             buf.resize(res as usize, 0);
+            let buf = match &self.cfg.xattrmap {
+                Some(map) => map.map_server_xattrlist(buf).expect("unterminated mapping"),
+                None => buf,
+            };
+
             Ok(ListxattrReply::Names(buf))
         }
     }
@@ -1483,6 +1508,8 @@ impl FileSystem for PassthroughFs {
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to get a new fd.
         let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NONBLOCK)?;
+
+        let name = self.map_client_xattrname(name)?;
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe { libc::fremovexattr(file.as_raw_fd(), name.as_ptr()) };

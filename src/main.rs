@@ -6,9 +6,13 @@ use clap::{crate_authors, crate_version, App, Arg};
 use futures::executor::{ThreadPool, ThreadPoolBuilder};
 use libc::EFD_NONBLOCK;
 use log::*;
+use passthrough::xattrmap::XattrMap;
 use seccomp::SeccompAction;
 use std::sync::{Arc, Mutex, RwLock};
-use std::{convert, error, fmt, io, process};
+use std::{
+    convert::{self, TryFrom},
+    error, fmt, io, process,
+};
 
 use vhost::vhost_user::message::*;
 use vhost::vhost_user::{Listener, SlaveFsCacheReq};
@@ -332,6 +336,14 @@ fn main() {
                 .help("Disable support for extended attributes"),
         )
         .arg(
+            Arg::with_name("xattrmap")
+                .long("xattrmap")
+                .help("Add custom rules for extended attributes")
+                .takes_value(true)
+                .number_of_values(1)
+                .conflicts_with("disable-xattr"),
+        )
+        .arg(
             Arg::with_name("sandbox")
                 .long("sandbox")
                 .help("Sandbox mechanism to isolate the daemon process")
@@ -371,12 +383,18 @@ fn main() {
         None => THREAD_POOL_SIZE,
     };
     let xattr: bool = !cmd_arguments.is_present("disable-xattr");
+    let xattrmap = match cmd_arguments.value_of("xattrmap") {
+        None => None,
+        Some(rules) => Some(XattrMap::try_from(rules).expect("xattrmap rule parsing failed")),
+    };
+
     let sandbox_mode: SandboxMode = match cmd_arguments.value_of("sandbox").unwrap() {
         "namespace" => SandboxMode::Namespace,
         "chroot" => SandboxMode::Chroot,
         "none" => SandboxMode::None,
         _ => unreachable!(), // We told Arg possible_values
     };
+
     let seccomp_mode: SeccompAction = match cmd_arguments.value_of("seccomp").unwrap() {
         "none" => SeccompAction::Allow, // i.e. no seccomp
         "kill" => SeccompAction::Kill,
@@ -397,6 +415,7 @@ fn main() {
         None => passthrough::Config {
             root_dir: sandbox.get_root_dir(),
             xattr,
+            xattrmap,
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
             announce_submounts,
             ..Default::default()
