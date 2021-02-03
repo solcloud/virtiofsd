@@ -1,5 +1,6 @@
+use std::borrow::Cow;
 use std::convert::TryFrom;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::fmt;
 use std::iter::Peekable;
 
@@ -11,6 +12,7 @@ pub enum ErrorKind {
     IncompleteRule,
     MapRuleViolation,
     NoRulesProvided,
+    UnterminatedMapping,
 }
 
 impl std::error::Error for ErrorKind {}
@@ -109,6 +111,18 @@ struct Rule {
 }
 
 impl Rule {
+    fn matches(&self, scope: Scope, xattr_name: &[u8]) -> bool {
+        if !self.scope.contains(scope) {
+            return false;
+        }
+
+        match scope {
+            Scope::CLIENT => xattr_name.starts_with(&self.key.to_bytes()),
+            Scope::SERVER => xattr_name.starts_with(&self.prepend.to_bytes()),
+            _ => panic!("ambiguous scope"),
+        }
+    }
+
     fn from_tokens<I>(tokens: &mut Peekable<I>) -> Result<Self, ErrorKind>
     where
         I: Iterator<Item = char>,
@@ -167,9 +181,87 @@ impl Rule {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum AppliedRule<'a> {
+    Pass(Cow<'a, CStr>),
+    Deny,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct XattrMap {
     rules: Vec<Rule>,
+}
+
+impl XattrMap {
+    /// Applies xattrmap rules to a single extended attribute name.
+    ///
+    /// This should be called *before* any other extended attribute
+    /// operation is performed on the host file system.
+    ///
+    /// Client request -> this method -> {get,set,remove}xattr() -> server response
+    ///
+    /// See also: getxattr(2), setxattr(2), removexattr(2)
+    pub fn map_client_xattr<'a>(&self, xattr_name: &'a CStr) -> Result<AppliedRule<'a>, Error> {
+        let rule = self.find_rule(Scope::CLIENT, xattr_name.to_bytes())?;
+
+        Ok(match rule.type_ {
+            Type::Okay => AppliedRule::Pass(Cow::Borrowed(xattr_name)),
+            Type::Bad => AppliedRule::Deny,
+            Type::Map | Type::Prefix => {
+                let mut concat = rule.prepend.as_bytes().to_vec();
+                concat.extend_from_slice(xattr_name.to_bytes());
+                AppliedRule::Pass(Cow::Owned(CString::new(concat).unwrap()))
+            }
+        })
+    }
+
+    /// Applies xattrmap rules to a list of extended attribute names.
+    ///
+    /// This should be called *before* replying to the client with the list
+    /// of extended attribute names.
+    ///
+    /// Client request -> listxattr() -> this method -> server response
+    ///
+    /// See also: listxattr(2)
+    pub fn map_server_xattrlist(&self, xattr_names: Vec<u8>) -> Result<Vec<u8>, Error> {
+        let mut filtered = Vec::with_capacity(xattr_names.len());
+        let unprocessed = xattr_names.split(|b| *b == 0).filter(|bs| !bs.is_empty());
+
+        for xattr_name in unprocessed {
+            let rule = self.find_rule(Scope::SERVER, xattr_name)?;
+
+            let processed = match rule.type_ {
+                Type::Bad => continue, // hide this from the client
+                Type::Okay => xattr_name,
+                Type::Map | Type::Prefix => &xattr_name[rule.prepend.as_bytes().len()..], // strip prefix
+            };
+
+            filtered.extend_from_slice(processed);
+            filtered.push(0);
+        }
+
+        if filtered.is_empty() {
+            filtered.push(0);
+        }
+
+        filtered.shrink_to_fit();
+
+        Ok(filtered)
+    }
+
+    fn find_rule(&self, scope: Scope, xattr_name: &[u8]) -> Result<&Rule, Error> {
+        let rule = self
+            .rules
+            .iter()
+            .find(|r| r.matches(scope, xattr_name))
+            .ok_or(ErrorKind::UnterminatedMapping)
+            .map_err(|e| Error {
+                cause: e,
+                rule: None,
+            })?;
+
+        Ok(rule)
+    }
 }
 
 impl TryFrom<&str> for XattrMap {
@@ -364,6 +456,122 @@ mod tests {
         };
 
         let actual = XattrMap::try_from(input).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_rule_ok_all() {
+        let map = XattrMap {
+            rules: vec![Rule {
+                type_: Type::Okay,
+                scope: Scope::CLIENT | Scope::SERVER,
+                key: CString::new("").unwrap(),
+                prepend: CString::new("").unwrap(),
+            }],
+        };
+        let input = CString::new("user.virtiofs.potato").unwrap();
+        let actual = map.map_client_xattr(&input).unwrap();
+        let expected = AppliedRule::Pass(CString::new("user.virtiofs.potato").unwrap().into());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_rule_bad_hides_xattr_names_from_client() {
+        let input = b"security.secret\x00boring_attr".to_vec();
+        let map = XattrMap {
+            rules: vec![
+                Rule {
+                    type_: Type::Bad,
+                    scope: Scope::SERVER,
+                    key: CString::new("").unwrap(),
+                    prepend: CString::new("security.").unwrap(),
+                },
+                Rule {
+                    type_: Type::Okay,
+                    scope: Scope::CLIENT | Scope::SERVER,
+                    key: CString::new("").unwrap(),
+                    prepend: CString::new("").unwrap(),
+                },
+            ],
+        };
+
+        let actual = map.map_server_xattrlist(input).unwrap();
+        let expected = b"boring_attr\x00";
+        assert_eq!(actual.as_slice(), expected);
+    }
+
+    #[test]
+    fn test_rule_bad_denies_the_client_request() {
+        let map = XattrMap {
+            rules: vec![Rule {
+                type_: Type::Bad,
+                scope: Scope::CLIENT,
+                key: CString::new("").unwrap(),
+                prepend: CString::new("").unwrap(),
+            }],
+        };
+
+        let input = CString::new("virtiofs.").unwrap();
+        let actual = map.map_client_xattr(&input).unwrap();
+        let expected = AppliedRule::Deny;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_rule_prefix_prepends_xattr_names_from_client() {
+        let map = XattrMap {
+            rules: vec![Rule {
+                type_: Type::Prefix,
+                scope: Scope::CLIENT | Scope::SERVER,
+                key: CString::new("trusted.").unwrap(),
+                prepend: CString::new("virtiofs.user.").unwrap(),
+            }],
+        };
+
+        let input = CString::new("trusted.secret_thing").unwrap();
+        let actual = map.map_client_xattr(&input).unwrap();
+        let expected = AppliedRule::Pass(Cow::Owned(
+            CString::new("virtiofs.user.trusted.secret_thing").unwrap(),
+        ));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_rule_prefix_strips_prefixes_from_server() {
+        let map = XattrMap {
+            rules: vec![Rule {
+                type_: Type::Prefix,
+                scope: Scope::SERVER,
+                key: CString::new("").unwrap(),
+                prepend: CString::new("virtiofs.user.").unwrap(),
+            }],
+        };
+
+        let list = b"virtiofs.user.x".to_vec();
+        let actual = map.map_server_xattrlist(list).unwrap();
+        let expected = b"x\x00".to_vec();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_rule_ok_allows_xattr_names_to_pass_through_unchanged() {
+        let map = XattrMap {
+            rules: vec![Rule {
+                type_: Type::Okay,
+                scope: Scope::CLIENT | Scope::SERVER,
+                key: CString::new("allow.").unwrap(),
+                prepend: CString::new("allow.").unwrap(),
+            }],
+        };
+
+        let input = CString::new("allow.y").unwrap();
+        let actual = map.map_client_xattr(&input).unwrap();
+        let expected = AppliedRule::Pass(Cow::Owned(CString::new("allow.y").unwrap()));
+        assert_eq!(actual, expected);
+
+        let list = b"allow.y\x00".to_vec();
+        let expected = list.clone();
+        let actual = map.map_server_xattrlist(list).unwrap();
         assert_eq!(actual, expected);
     }
 }
