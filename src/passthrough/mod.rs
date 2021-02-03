@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+pub mod xattrmap;
+
 use super::fs_cache_req_handler::FsCacheReqHandler;
 use crate::filesystem::{
     Context, Entry, FileSystem, FsOptions, GetxattrReply, ListxattrReply, OpenOptions,
