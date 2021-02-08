@@ -5,7 +5,7 @@ authors = ["The Cloud Hypervisor Authors"]
 edition = "2018"
 
 [dependencies]
-bitflags = "1.1.0"
+bitflags = "1.2"
 clap = { version = "2.33.3", features=["wrap_help"] }
 epoll = ">=4.0.1"
 futures = { version = "0.3.5", features = ["thread-pool"] }
