@@ -17,6 +17,6 @@ tempdir = "0.3"
 vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend" }
 vhost = { git = "https://github.com/rust-vmm/vhost", features = ["vhost-user-slave"] }
 virtio-bindings = { version = "0.1", features = ["virtio-v5_0_0"] }
-vm-memory = ">=0.3.0"
+vm-memory = "0.4"
 vm-virtio = { git = "https://github.com/rust-vmm/vm-virtio" }
 vmm-sys-util = ">=0.4.0"
