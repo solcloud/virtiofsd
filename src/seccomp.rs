@@ -137,6 +137,6 @@ fn vuf_filter(action: SeccompAction) -> Result<SeccompFilter, Error> {
 pub fn enable_seccomp(action: SeccompAction) -> Result<(), Error> {
     let scfilter = vuf_filter(action)?;
     let bpfprog: BpfProgram = scfilter.try_into()?;
-    SeccompFilter::apply(bpfprog.try_into().unwrap()).unwrap();
+    SeccompFilter::apply(bpfprog).unwrap();
     Ok(())
 }
