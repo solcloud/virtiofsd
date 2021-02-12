@@ -21,7 +21,7 @@ use virtiofsd_rs::descriptor_utils::Error as VufDescriptorError;
 use virtiofsd_rs::descriptor_utils::{Reader, Writer};
 use virtiofsd_rs::filesystem::FileSystem;
 use virtiofsd_rs::passthrough::{self, PassthroughFs};
-use virtiofsd_rs::sandbox::Sandbox;
+use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
 use virtiofsd_rs::seccomp::enable_seccomp;
 use virtiofsd_rs::server::Server;
 use virtiofsd_rs::Error as VhostUserFsError;
@@ -332,9 +332,11 @@ fn main() {
                 .help("Disable support for extended attributes"),
         )
         .arg(
-            Arg::with_name("disable-sandbox")
-                .long("disable-sandbox")
-                .help("Don't set up a sandbox for the daemon"),
+            Arg::with_name("sandbox")
+                .long("sandbox")
+                .help("Sandbox mechanism to isolate the daemon process")
+                .possible_values(&["namespace", "chroot", "none"])
+                .default_value("namespace"),
         )
         .arg(
             Arg::with_name("seccomp")
@@ -369,7 +371,12 @@ fn main() {
         None => THREAD_POOL_SIZE,
     };
     let xattr: bool = !cmd_arguments.is_present("disable-xattr");
-    let create_sandbox: bool = !cmd_arguments.is_present("disable-sandbox");
+    let sandbox_mode: SandboxMode = match cmd_arguments.value_of("sandbox").unwrap() {
+        "namespace" => SandboxMode::Namespace,
+        "chroot" => SandboxMode::Chroot,
+        "none" => SandboxMode::None,
+        _ => unreachable!(), // We told Arg possible_values
+    };
     let seccomp_mode: SeccompAction = match cmd_arguments.value_of("seccomp").unwrap() {
         "none" => SeccompAction::Allow, // i.e. no seccomp
         "kill" => SeccompAction::Kill,
@@ -381,28 +388,19 @@ fn main() {
 
     let listener = Listener::new(socket, true).unwrap();
 
-    let fs_cfg = if create_sandbox {
-        let mut sandbox = Sandbox::new(shared_dir.to_string());
-        match sandbox.enter().unwrap() {
-            Some(child_pid) => {
-                unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
-                return;
-            }
-            None => passthrough::Config {
-                root_dir: "/".to_string(),
-                xattr,
-                proc_sfd_rawfd: sandbox.get_proc_self_fd(),
-                announce_submounts,
-                ..Default::default()
-            },
+    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode);
+    let fs_cfg = match sandbox.enter().unwrap() {
+        Some(child_pid) => {
+            unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
+            return;
         }
-    } else {
-        passthrough::Config {
-            root_dir: shared_dir.to_string(),
+        None => passthrough::Config {
+            root_dir: sandbox.get_root_dir(),
             xattr,
+            proc_sfd_rawfd: sandbox.get_proc_self_fd(),
             announce_submounts,
             ..Default::default()
-        }
+        },
     };
 
     // Must happen before we start the thread pool
