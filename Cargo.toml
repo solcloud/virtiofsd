@@ -5,18 +5,18 @@ authors = ["The Cloud Hypervisor Authors"]
 edition = "2018"
 
 [dependencies]
-bitflags = "1.1.0"
-clap = { version = "2.33.3", features=["wrap_help"] }
-epoll = ">=4.0.1"
-futures = { version = "0.3.5", features = ["thread-pool"] }
-libc = "0.2.79"
-log = "0.4.6"
+bitflags = "1.2"
+clap = { version = "2.33", features=["wrap_help"] }
+epoll = "4.3"
+futures = { version = "0.3", features = ["thread-pool"] }
+libc = "0.2"
+log = "0.4"
 # Match the version in vmm
 seccomp = { git = "https://github.com/firecracker-microvm/firecracker", tag = "v0.22.0" }
-tempdir = "0.3.7"
-vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend" }
+tempdir = "0.3"
+vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend", rev = "3c97ba5" }
 vhost = { git = "https://github.com/rust-vmm/vhost", features = ["vhost-user-slave"] }
 virtio-bindings = { version = "0.1", features = ["virtio-v5_0_0"] }
-vm-memory = ">=0.3.0"
+vm-memory = "0.4"
 vm-virtio = { git = "https://github.com/rust-vmm/vm-virtio" }
-vmm-sys-util = ">=0.4.0"
+vmm-sys-util = "0.7"

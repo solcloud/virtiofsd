@@ -10,4 +10,5 @@ test:cargo:
     - rustc --version && cargo --version  # Print version info for debugging
     - rustup component add clippy
     - cargo build --verbose
+    - cargo test
     - cargo clippy --verbose
