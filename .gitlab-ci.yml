@@ -11,6 +11,12 @@ clippy:
   script:
     - cargo clippy --verbose
 
+fmt:
+  before_script:
+    - rustup component add rustfmt
+  script:
+    - cargo fmt -v -- --check
+
 test:
   script:
     - rustc --version && cargo --version  # Print version info for debugging

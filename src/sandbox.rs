@@ -279,10 +279,7 @@ impl Sandbox {
         // of file-handles a process can allocate.
         let path = "/proc/sys/fs/nr_open";
         let max_str = fs::read_to_string(path).map_err(Error::ReadProc)?;
-        let max = max_str
-            .trim()
-            .parse()
-            .map_err(Error::InvalidNrOpen)?;
+        let max = max_str.trim().parse().map_err(Error::InvalidNrOpen)?;
 
         let limit = libc::rlimit {
             rlim_cur: max,
