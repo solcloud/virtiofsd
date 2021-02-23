@@ -11,8 +11,8 @@ clippy:
   script:
     - cargo clippy --verbose
 
-test:cargo:
+test:
   script:
     - rustc --version && cargo --version  # Print version info for debugging
     - cargo build --verbose
-    - cargo test
+    - cargo test --verbose
