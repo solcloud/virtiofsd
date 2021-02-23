@@ -361,8 +361,8 @@ impl Sandbox {
     /// the child itself, with the latter running isolated in `self.shared_dir`.
     pub fn enter(&mut self) -> Result<Option<i32>, Error> {
         match self.sandbox_mode {
-            SandboxMode::Namespace => return self.enter_namespace(),
-            SandboxMode::Chroot => return self.enter_chroot(),
+            SandboxMode::Namespace => self.enter_namespace(),
+            SandboxMode::Chroot => self.enter_chroot(),
             SandboxMode::None => Ok(None),
         }
     }

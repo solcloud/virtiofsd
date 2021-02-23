@@ -5,10 +5,14 @@ workflow:
 
 image: "rust:latest"
 
+clippy:
+  before_script:
+    - rustup component add clippy
+  script:
+    - cargo clippy --verbose
+
 test:cargo:
   script:
     - rustc --version && cargo --version  # Print version info for debugging
-    - rustup component add clippy
     - cargo build --verbose
     - cargo test
-    - cargo clippy --verbose
