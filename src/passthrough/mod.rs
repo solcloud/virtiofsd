@@ -232,6 +232,10 @@ pub struct Config {
     /// An optional translation layer for host<->guest Extended Attribute (xattr) names.
     pub xattrmap: Option<XattrMap>,
 
+    /// The xattr name that "security.capability" is remapped to, if the client remapped it at all.
+    /// If the client's xattrmap did not remap "security.capability", this will be `None`.
+    pub xattr_security_capability: Option<CString>,
+
     /// Optional file descriptor for /proc/self/fd. Callers can obtain a file descriptor and pass it
     /// here, so there's no need to open it in PassthroughFs::new(). This is specially useful for
     /// sandboxing.
@@ -265,6 +269,7 @@ impl Default for Config {
             root_dir: String::from("/"),
             xattr: false,
             xattrmap: None,
+            xattr_security_capability: None,
             proc_sfd_rawfd: None,
             announce_submounts: true,
         }
@@ -332,19 +337,28 @@ impl PassthroughFs {
         // Safe because we just opened this fd or it was provided by our caller.
         let proc_self_fd = unsafe { File::from_raw_fd(fd) };
 
-        Ok(PassthroughFs {
+        let mut fs = PassthroughFs {
             inodes: RwLock::new(MultikeyBTreeMap::new()),
             next_inode: AtomicU64::new(fuse::ROOT_ID + 1),
-
             handles: RwLock::new(BTreeMap::new()),
             next_handle: AtomicU64::new(0),
-
             proc_self_fd,
-
             writeback: AtomicBool::new(false),
             announce_submounts: AtomicBool::new(false),
             cfg,
-        })
+        };
+
+        // Check to see if the client remapped "security.capability", if so,
+        // stash its mapping since the daemon will have to enforce semantics
+        // that the host kernel otherwise would if the xattrname was not mapped.
+        let sec_xattr = unsafe { CStr::from_bytes_with_nul_unchecked(b"security.capability\0") };
+        fs.cfg.xattr_security_capability = fs
+            .map_client_xattrname(sec_xattr)
+            .ok()
+            .filter(|n| !sec_xattr.eq(n))
+            .map(CString::from);
+
+        Ok(fs)
     }
 
     pub fn keep_fds(&self) -> Vec<RawFd> {
@@ -494,6 +508,11 @@ impl PassthroughFs {
     fn do_open(&self, inode: Inode, flags: u32) -> io::Result<(Option<Handle>, OpenOptions)> {
         let file = RwLock::new(self.open_inode(inode, flags as i32)?);
 
+        if flags & (libc::O_TRUNC as u32) != 0 {
+            let file = file.read().expect("poisoned lock");
+            self.drop_security_capability(file.as_raw_fd())?;
+        }
+
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         let data = HandleData { inode, file };
 
@@ -573,6 +592,28 @@ impl PassthroughFs {
                 AppliedRule::Pass(new_name) => Ok(new_name),
             },
             None => Ok(Cow::Borrowed(name)),
+        }
+    }
+
+    fn drop_security_capability(&self, fd: libc::c_int) -> io::Result<()> {
+        match self.cfg.xattr_security_capability.as_ref() {
+            // Unmapped, let the kernel take care of this.
+            None => Ok(()),
+            // Otherwise we have to uphold the same semantics the kernel
+            // would; which is to drop the "security.capability" xattr
+            // on write
+            Some(xattrname) => {
+                let res = unsafe { libc::fremovexattr(fd, xattrname.as_ptr()) };
+                if res == 0 {
+                    Ok(())
+                } else {
+                    let eno = io::Error::last_os_error();
+                    match eno.raw_os_error().unwrap() {
+                        libc::ENODATA | libc::ENOTSUP => Ok(()),
+                        _ => Err(eno),
+                    }
+                }
+            }
         }
     }
 }
@@ -957,6 +998,9 @@ impl FileSystem for PassthroughFs {
         // This is safe because read_to uses pwritev64, so the underlying file descriptor
         // offset is not affected by this operation.
         let mut f = data.file.read().unwrap().try_clone().unwrap();
+
+        self.drop_security_capability(f.as_raw_fd())?;
+
         r.read_to(&mut f, size as usize, offset)
     }
 
@@ -1404,6 +1448,8 @@ impl FileSystem for PassthroughFs {
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to get a new fd.
         let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NONBLOCK)?;
+
+        self.drop_security_capability(file.as_raw_fd())?;
 
         let name = self.map_client_xattrname(name)?;
 
