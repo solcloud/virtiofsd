@@ -116,9 +116,9 @@ impl<F: FileSystem + Sync> Server<F> {
             x if x == Opcode::Setlkw as u32 => self.setlkw(in_header, r, w),
             x if x == Opcode::Access as u32 => self.access(in_header, r, w),
             x if x == Opcode::Create as u32 => self.create(in_header, r, w),
-            x if x == Opcode::Interrupt as u32 => self.interrupt(in_header),
+            x if x == Opcode::Interrupt as u32 => Ok(self.interrupt(in_header)),
             x if x == Opcode::Bmap as u32 => self.bmap(in_header, r, w),
-            x if x == Opcode::Destroy as u32 => self.destroy(),
+            x if x == Opcode::Destroy as u32 => Ok(self.destroy()),
             x if x == Opcode::Ioctl as u32 => self.ioctl(in_header, r, w),
             x if x == Opcode::Poll as u32 => self.poll(in_header, r, w),
             x if x == Opcode::NotifyReply as u32 => self.notify_reply(in_header, r, w),
@@ -1261,8 +1261,8 @@ impl<F: FileSystem + Sync> Server<F> {
         }
     }
 
-    fn interrupt(&self, _in_header: InHeader) -> Result<usize> {
-        Ok(0)
+    fn interrupt(&self, _in_header: InHeader) -> usize {
+        0
     }
 
     fn bmap(&self, in_header: InHeader, mut _r: Reader, w: Writer) -> Result<usize> {
@@ -1273,11 +1273,11 @@ impl<F: FileSystem + Sync> Server<F> {
         }
     }
 
-    fn destroy(&self) -> Result<usize> {
+    fn destroy(&self) -> usize {
         // No reply to this function.
         self.fs.destroy();
 
-        Ok(0)
+        0
     }
 
     fn ioctl(&self, in_header: InHeader, _r: Reader, w: Writer) -> Result<usize> {
