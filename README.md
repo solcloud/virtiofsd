@@ -12,4 +12,4 @@ download and test virtiofsd-rs without needing a Rust toolchain installed.
 The debug binary is built only for x86\_64 Linux-based systems.
 
 [Click here to download the latest build](
-https://gitlab.com/virtio-fs/virtiofsd-rs/-/jobs/artifacts/master/download?job=publish)
+https://gitlab.com/virtio-fs/virtiofsd-rs/-/jobs/artifacts/main/download?job=publish)
