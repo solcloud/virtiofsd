@@ -320,7 +320,7 @@ impl PassthroughFs {
         let proc_self_fd = unsafe { File::from_raw_fd(fd) };
 
         // Check for statx() system call
-        let use_statx = match statx(&proc_self_fd) {
+        let use_statx = match statx(&proc_self_fd, None) {
             Ok(_) => true,
             Err(err) => !matches!(err.raw_os_error(), Some(libc::ENOSYS)),
         };
@@ -354,11 +354,11 @@ impl PassthroughFs {
         vec![self.proc_self_fd.as_raw_fd()]
     }
 
-    fn stat(&self, f: &File) -> io::Result<StatExt> {
+    fn stat(&self, dir: &File, path: Option<&CStr>) -> io::Result<StatExt> {
         if self.use_statx {
-            statx(f)
+            statx(dir, path)
         } else {
-            stat64(f)
+            stat64(dir, path)
         }
     }
 
@@ -448,7 +448,7 @@ impl PassthroughFs {
 
         let mut attr_flags: u32 = 0;
 
-        let st = self.stat(&f)?;
+        let st = self.stat(&f, None)?;
 
         if st.st.st_mode & libc::S_IFDIR != 0
             && self.announce_submounts.load(Ordering::Relaxed)
@@ -562,7 +562,7 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = self.stat(&data.file)?.st;
+        let st = self.stat(&data.file, None)?.st;
 
         Ok((st, self.cfg.attr_timeout))
     }
@@ -682,7 +682,7 @@ impl FileSystem for PassthroughFs {
         // Safe because we just opened this fd above.
         let f = unsafe { File::from_raw_fd(fd) };
 
-        let st = self.stat(&f)?;
+        let st = self.stat(&f, None)?;
 
         // Safe because this doesn't modify any memory and there is no need to check the return
         // value because this system call always succeeds. We need to clear the umask here because
@@ -1404,7 +1404,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = self.stat(&data.file)?.st;
+        let st = self.stat(&data.file, None)?.st;
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
         if mode == libc::F_OK {
