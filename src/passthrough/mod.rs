@@ -49,6 +49,18 @@ struct InodeData {
     refcount: AtomicU64,
 }
 
+/**
+ * Represents the file associated with an inode (`InodeData`).
+ *
+ * When obtaining such a file, it may either be a new file (the `Owned` variant), in which case the
+ * object's lifetime is static, or it may reference `InodeData.file` (the `Ref` variant), in which
+ * case the object's lifetime is that of the respective `InodeData` object.
+ */
+enum InodeFile<'inode_lifetime> {
+    Owned(File),
+    Ref(&'inode_lifetime File),
+}
+
 /// Open `/proc/self/fd/{fd}` with the given flags to effectively duplicate the given `fd` with new
 /// flags (e.g. to turn an `O_PATH` file descriptor into one that can be used for I/O).
 fn reopen_fd_through_proc(
@@ -75,6 +87,41 @@ fn reopen_fd_through_proc(
         Ok(unsafe { File::from_raw_fd(new_fd) })
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+impl<'a> InodeData {
+    /// Get an `O_PATH` file for this inode
+    fn get_file(&'a self) -> io::Result<InodeFile<'a>> {
+        Ok(InodeFile::Ref(&self.file))
+    }
+
+    /// Open this inode with the given flags
+    /// (always returns a new (i.e. `Owned`) file, hence the static lifetime)
+    fn open_file(&self, flags: libc::c_int, proc_self_fd: &File) -> io::Result<InodeFile<'static>> {
+        let file = reopen_fd_through_proc(&self.file, flags, proc_self_fd)?;
+        Ok(InodeFile::Owned(file))
+    }
+}
+
+impl InodeFile<'_> {
+    /// Create a standalone `File` object
+    fn into_file(self) -> io::Result<File> {
+        match self {
+            Self::Owned(file) => Ok(file),
+            Self::Ref(file_ref) => file_ref.try_clone(),
+        }
+    }
+}
+
+impl AsRawFd for InodeFile<'_> {
+    /// Return a file descriptor for this file
+    /// Note: This fd is only valid as long as the `InodeFile` exists.
+    fn as_raw_fd(&self) -> RawFd {
+        match self {
+            Self::Owned(file) => file.as_raw_fd(),
+            Self::Ref(file_ref) => file_ref.as_raw_fd(),
+        }
     }
 }
 
@@ -429,7 +476,8 @@ impl PassthroughFs {
             flags &= !libc::O_APPEND;
         }
 
-        reopen_fd_through_proc(&data.file, flags | libc::O_CLOEXEC, &self.proc_self_fd)
+        data.open_file(flags | libc::O_CLOEXEC, &self.proc_self_fd)?
+            .into_file()
     }
 
     fn do_lookup(&self, parent: Inode, name: &CStr) -> io::Result<Entry> {
@@ -441,10 +489,12 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let p_file = p.get_file()?;
+
         // Safe because this doesn't modify any memory and we check the return value.
         let fd = unsafe {
             libc::openat(
-                p.file.as_raw_fd(),
+                p_file.as_raw_fd(),
                 name.as_ptr(),
                 libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )
@@ -572,7 +622,8 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = self.stat(&data.file, None)?.st;
+        let inode_file = data.get_file()?;
+        let st = self.stat(&inode_file, None)?.st;
 
         Ok((st, self.cfg.attr_timeout))
     }
@@ -586,8 +637,10 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let parent_file = data.get_file()?;
+
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe { libc::unlinkat(data.file.as_raw_fd(), name.as_ptr(), flags) };
+        let res = unsafe { libc::unlinkat(parent_file.as_raw_fd(), name.as_ptr(), flags) };
         if res == 0 {
             Ok(())
         } else {
@@ -750,10 +803,11 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let inode_file = data.get_file()?;
         let mut out = MaybeUninit::<libc::statvfs64>::zeroed();
 
         // Safe because this will only modify `out` and we check the return value.
-        let res = unsafe { libc::fstatvfs64(data.file.as_raw_fd(), out.as_mut_ptr()) };
+        let res = unsafe { libc::fstatvfs64(inode_file.as_raw_fd(), out.as_mut_ptr()) };
         if res == 0 {
             // Safe because the kernel guarantees that `out` has been initialized.
             Ok(unsafe { out.assume_init() })
@@ -815,11 +869,13 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let parent_file = data.get_file()?;
+
         let res = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
 
             // Safe because this doesn't modify any memory and we check the return value.
-            unsafe { libc::mkdirat(data.file.as_raw_fd(), name.as_ptr(), mode & !umask) }
+            unsafe { libc::mkdirat(parent_file.as_raw_fd(), name.as_ptr(), mode & !umask) }
         };
         if res == 0 {
             self.do_lookup(parent, name)
@@ -894,6 +950,8 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let parent_file = data.get_file()?;
+
         let fd = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
 
@@ -902,7 +960,7 @@ impl FileSystem for PassthroughFs {
             // have much bigger problems.
             unsafe {
                 libc::openat(
-                    data.file.as_raw_fd(),
+                    parent_file.as_raw_fd(),
                     name.as_ptr(),
                     flags as i32 | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
                     mode & !(umask & 0o777),
@@ -1054,6 +1112,8 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let inode_file = inode_data.get_file()?;
+
         enum Data {
             Handle(Arc<HandleData>, RawFd),
             ProcPath(CString),
@@ -1066,7 +1126,7 @@ impl FileSystem for PassthroughFs {
             let fd = hd.file.write().unwrap().as_raw_fd();
             Data::Handle(hd, fd)
         } else {
-            let pathname = CString::new(format!("{}", inode_data.file.as_raw_fd()))
+            let pathname = CString::new(format!("{}", inode_file.as_raw_fd()))
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             Data::ProcPath(pathname)
         };
@@ -1100,7 +1160,7 @@ impl FileSystem for PassthroughFs {
                 ::std::u32::MAX
             };
 
-            self.drop_security_capability(inode_data.file.as_raw_fd())?;
+            self.drop_security_capability(inode_file.as_raw_fd())?;
 
             // Safe because this is a constant value and a valid C string.
             let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
@@ -1108,7 +1168,7 @@ impl FileSystem for PassthroughFs {
             // Safe because this doesn't modify any memory and we check the return value.
             let res = unsafe {
                 libc::fchownat(
-                    inode_data.file.as_raw_fd(),
+                    inode_file.as_raw_fd(),
                     empty.as_ptr(),
                     uid,
                     gid,
@@ -1203,15 +1263,18 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let old_file = old_inode.get_file()?;
+        let new_file = new_inode.get_file()?;
+
         // Safe because this doesn't modify any memory and we check the return value.
         // TODO: Switch to libc::renameat2 once https://github.com/rust-lang/libc/pull/1508 lands
         // and we have glibc 2.28.
         let res = unsafe {
             libc::syscall(
                 libc::SYS_renameat2,
-                old_inode.file.as_raw_fd(),
+                old_file.as_raw_fd(),
                 oldname.as_ptr(),
-                new_inode.file.as_raw_fd(),
+                new_file.as_raw_fd(),
                 newname.as_ptr(),
                 flags,
             )
@@ -1240,13 +1303,15 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let parent_file = data.get_file()?;
+
         let res = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
 
             // Safe because this doesn't modify any memory and we check the return value.
             unsafe {
                 libc::mknodat(
-                    data.file.as_raw_fd(),
+                    parent_file.as_raw_fd(),
                     name.as_ptr(),
                     (mode & !umask) as libc::mode_t,
                     u64::from(rdev),
@@ -1286,12 +1351,15 @@ impl FileSystem for PassthroughFs {
         // Safe because this is a constant value and a valid C string.
         let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
 
+        let inode_file = data.get_file()?;
+        let newparent_file = new_inode.get_file()?;
+
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
             libc::linkat(
-                data.file.as_raw_fd(),
+                inode_file.as_raw_fd(),
                 empty.as_ptr(),
-                new_inode.file.as_raw_fd(),
+                newparent_file.as_raw_fd(),
                 newname.as_ptr(),
                 libc::AT_EMPTY_PATH,
             )
@@ -1318,11 +1386,13 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let parent_file = data.get_file()?;
+
         let res = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
 
             // Safe because this doesn't modify any memory and we check the return value.
-            unsafe { libc::symlinkat(linkname.as_ptr(), data.file.as_raw_fd(), name.as_ptr()) }
+            unsafe { libc::symlinkat(linkname.as_ptr(), parent_file.as_raw_fd(), name.as_ptr()) }
         };
         if res == 0 {
             self.do_lookup(parent, name)
@@ -1340,6 +1410,8 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        let inode_file = data.get_file()?;
+
         let mut buf = vec![0; libc::PATH_MAX as usize];
 
         // Safe because this is a constant value and a valid C string.
@@ -1348,7 +1420,7 @@ impl FileSystem for PassthroughFs {
         // Safe because this will only modify the contents of `buf` and we check the return value.
         let res = unsafe {
             libc::readlinkat(
-                data.file.as_raw_fd(),
+                inode_file.as_raw_fd(),
                 empty.as_ptr(),
                 buf.as_mut_ptr() as *mut libc::c_char,
                 buf.len(),
@@ -1428,7 +1500,8 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = self.stat(&data.file, None)?.st;
+        let inode_file = data.get_file()?;
+        let st = self.stat(&inode_file, None)?.st;
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
         if mode == libc::F_OK {
