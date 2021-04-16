@@ -43,13 +43,11 @@ enum InodeAltKey {
         dev: libc::dev_t,
         mnt_id: u64,
     },
-    #[allow(dead_code)]
     Handle(FileHandle),
 }
 
 enum FileOrHandle {
     File(File),
-    #[allow(dead_code)]
     Handle(FileHandle),
 }
 
@@ -355,6 +353,18 @@ pub struct Config {
     ///
     /// The default is `true`.
     pub announce_submounts: bool,
+
+    /// Whether to use file handles to reference inodes.  We need to be able to open file
+    /// descriptors for arbitrary inodes, and by default that is done by storing an `O_PATH` FD in
+    /// `InodeData`.  Not least because there is a maximum number of FDs a process can have open
+    /// users may find it preferable to store a file handle instead, which we can use to open an FD
+    /// when necessary.
+    /// So this switch allows to choose between the alternatives: When set to `false`, `InodeData`
+    /// will store `O_PATH` FDs.  Otherwise, we will attempt to generate and store a file handle
+    /// instead.
+    ///
+    /// The default is `false`.
+    pub inode_file_handles: bool,
 }
 
 impl Default for Config {
@@ -370,6 +380,7 @@ impl Default for Config {
             xattr_security_capability: None,
             proc_sfd_rawfd: None,
             announce_submounts: true,
+            inode_file_handles: false,
         }
     }
 }
@@ -538,24 +549,40 @@ impl PassthroughFs {
 
         let p_file = p.get_file(&self.mount_fds)?;
 
-        // Safe because this doesn't modify any memory and we check the return value.
-        let fd = unsafe {
-            libc::openat(
-                p_file.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
+        let handle = if self.cfg.inode_file_handles {
+            FileHandle::from_name_at_with_mount_fds(&p_file, name, &self.mount_fds, |fd, flags| {
+                reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+            })
+        } else {
+            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
         };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
 
-        // Safe because we just opened this fd.
-        let f = unsafe { File::from_raw_fd(fd) };
+        // Ignore errors, because having a handle is optional
+        let file_or_handle = if let Ok(h) = handle {
+            FileOrHandle::Handle(h)
+        } else {
+            // Safe because this doesn't modify any memory and we check the return value.
+            let fd = unsafe {
+                libc::openat(
+                    p_file.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            // Safe because we just opened this fd.
+            FileOrHandle::File(unsafe { File::from_raw_fd(fd) })
+        };
 
         let mut attr_flags: u32 = 0;
 
-        let st = self.stat(&f, None)?;
+        let st = match &file_or_handle {
+            FileOrHandle::File(f) => self.stat(f, None)?,
+            FileOrHandle::Handle(_) => self.stat(&p_file, Some(name))?,
+        };
 
         if st.st.st_mode & libc::S_IFDIR != 0
             && self.announce_submounts.load(Ordering::Relaxed)
@@ -569,8 +596,10 @@ impl PassthroughFs {
             dev: st.st.st_dev,
             mnt_id: st.mnt_id,
         };
-        // TODO: Once we generate file handles, set this
-        let handle_altkey: Option<InodeAltKey> = None;
+        // Note that this will always be `None` if `cfg.inode_file_handles` is false, but we only
+        // really need this alt key when we do not have an `O_PATH` fd open for every inode.  So if
+        // `cfg.inode_file_handles` is false, we do not need this key anyway.
+        let handle_altkey = file_or_handle.handle().map(|h| InodeAltKey::Handle(*h));
 
         let data = {
             let inodes = self.inodes.read().unwrap();
@@ -609,7 +638,7 @@ impl PassthroughFs {
                 inode,
                 Arc::new(InodeData {
                     inode,
-                    file_or_handle: FileOrHandle::File(f),
+                    file_or_handle,
                     refcount: AtomicU64::new(1),
                     dev: st.st.st_dev,
                     mnt_id: st.mnt_id,
@@ -796,31 +825,54 @@ impl FileSystem for PassthroughFs {
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         let root = CString::new(self.cfg.root_dir.as_str()).expect("CString::new failed");
 
-        // Safe because this doesn't modify any memory and we check the return value.
-        // We use `O_PATH` because we just want this for traversing the directory tree
-        // and not for actually reading the contents.
-        let fd = unsafe {
-            libc::openat(
-                libc::AT_FDCWD,
-                root.as_ptr(),
-                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        let handle = if self.cfg.inode_file_handles {
+            FileHandle::from_name_at_with_mount_fds(
+                &libc::AT_FDCWD,
+                &root,
+                &self.mount_fds,
+                |fd, flags| reopen_fd_through_proc(&fd, flags, &self.proc_self_fd),
             )
+        } else {
+            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
         };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
 
-        // Safe because we just opened this fd above.
-        let f = unsafe { File::from_raw_fd(fd) };
+        // Ignore errors, because having a handle is optional
+        let file_or_handle = if let Ok(h) = handle {
+            FileOrHandle::Handle(h)
+        } else {
+            // Safe because this doesn't modify any memory and we check the return value.
+            // We use `O_PATH` because we just want this for traversing the directory tree
+            // and not for actually reading the contents.
+            let fd = unsafe {
+                libc::openat(
+                    libc::AT_FDCWD,
+                    root.as_ptr(),
+                    libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
 
-        let st = self.stat(&f, None)?;
+            // Safe because we just opened this fd above.
+            FileOrHandle::File(unsafe { File::from_raw_fd(fd) })
+        };
+
+        let st = match &file_or_handle {
+            FileOrHandle::File(f) => self.stat(f, None)?,
+            FileOrHandle::Handle(_) => self.stat(&libc::AT_FDCWD, Some(&root))?,
+        };
 
         // Safe because this doesn't modify any memory and there is no need to check the return
         // value because this system call always succeeds. We need to clear the umask here because
         // we want the client to be able to set all the bits in the mode.
         unsafe { libc::umask(0o000) };
 
-        let handle_altkey: Option<InodeAltKey> = None;
+        // Copy file handle (if there is one) before moving file_or_handle into the new InodeData
+        // object
+        // (This is always `None` if `cfg.inode_file_handles` is false.  As explained in
+        // `do_lookup()`, that is alright.)
+        let handle_altkey = file_or_handle.handle().map(|h| InodeAltKey::Handle(*h));
 
         let mut inodes = self.inodes.write().unwrap();
 
@@ -829,7 +881,7 @@ impl FileSystem for PassthroughFs {
             fuse::ROOT_ID,
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
-                file_or_handle: FileOrHandle::File(f),
+                file_or_handle,
                 refcount: AtomicU64::new(2),
                 dev: st.st.st_dev,
                 mnt_id: st.mnt_id,

@@ -343,6 +343,10 @@ struct Opt {
     /// Don't tell the guest which directories are mount points
     #[structopt(long)]
     no_announce_submounts: bool,
+
+    /// Use file handles to reference inodes instead of O_PATH file descriptors
+    #[structopt(long)]
+    inode_file_handles: bool,
 }
 
 fn main() {
@@ -374,6 +378,7 @@ fn main() {
             xattrmap,
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
             announce_submounts,
+            inode_file_handles: opt.inode_file_handles,
             ..Default::default()
         },
     };
