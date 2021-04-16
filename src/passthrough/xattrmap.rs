@@ -1,17 +1,146 @@
+//! The `xattrmap` module is used to translate extended attribute operations
+//! between the server (virtiofsd-rs) and the client (the virtio-fs guest kernel
+//! module).
+//!
+//! Here's a non-exhaustive list of use-cases in which it may be beneficial to
+//! install an extended attribute mapping:
+//!
+//! * The guest VM process is executing at a privilege level where it can't
+//!   actually modify the extended attribute on the host. In this case, one
+//!   may choose to map those guest's extended attributes to a "user."
+//!   namespace on the host.
+//!
+//! * An extended attribute mapping can partition a host's extended attributes
+//!   from a guest's to prevent the guest from clobbering extended attributes
+//!   that the host has set and depends on.
+//!
+//! ## Rules
+//!
+//! The entity that launches virtiofsd-rs may provide an "extended attributes
+//! mapping" (or "xattrmap") that defines how extended attributes should be
+//! translated. An xattrmap is really just a series of rules with a specific
+//! syntax. When translating an xattr, the xattrmap rules are traversed in the
+//! order that the mappings were originally written. The traversal is terminated
+//! on the first rule that matches the xattr.
+//!
+//! The xattrmap _must_ have a terminating rule.
+//!
+//! ### Reference
+//!
+//! There are two ways of expressing an xattrmap rule:
+//!
+//! 1. `:type:scope:key:prepend:`
+//! 2. `:map:key:prepend:` - this is just syntactic sugar for expressing a common
+//!    rule. It is equivalent to `:prefix:all:prepend:prepend`.
+//!
+//! An xattrmap is just a series of these rules separated by whitespace. Each rule
+//! can have its own delimiter. The colon (`:`) was just used here as an arbitary
+//! example. Use a delimiter that you find readable.
+//!
+//! Let's dissect the xattrmap rule syntax: `:type:scope:key:prepend:`.
+//!
+//! | type | description |
+//! | - | - |
+//! | prefix | The value of `key` is prepended to xattrs originating from the client (i.e., `{get,set,remove}xattr()`). The value of `prepend` is stripped from the server's reply to `listxattr()`. |
+//! | ok | If the xattr originating from the client is prefixed with `key`, or if an xattr in a server reply is prefixed with `prepend` it passes through unchanged. |
+//! | bad | If the xattr originating from the client is prefixed with `key` it is denied with `EPERM`. If the xattr in a server reply is prefixed with `prepend` it is hidden from the client and not included in the reply. |
+//!
+//! `ok` and `bad` can both be used as simple terminators for an xattrmap to
+//! satisfy the expectation that every xattrmap has a terminator. For example,
+//! `:ok:all:::`, will vacuously terminate all mappings. Placing a rule like
+//! this at the end of the xattrmap rules is a common way of providing a
+//! terminator.
+//!
+//! | scope | description |
+//! | - | - |
+//! | server | Match on xattrnames in the server reply that are prefixed with `prepend`. |
+//! | client | Match on xattrnames from the client that are prefixed with `key`. |
+//! | all | Matches on both server replies and client requests as described for `server` and `client` scopes. |
+//!
+//! ### Examples
+//!
+//! These have been taken almost verbatim from the original virtiofsd
+//! documentation in the QEMU source code.
+//!
+//! #### Example 1
+//!
+//! ```text
+//! :prefix:all::user.virtiofs.:
+//! :bad:all:::
+//! ```
+//!
+//! There are two rules in this xattrmap. The first rule prefixes and strips
+//! `user.virtiofs.` from client requests and server replies respectively.
+//!
+//! The second rule hides any non-prefixed extended attributes that the host
+//! set.
+//!
+//! #### Example 2
+//!
+//! ```text
+//! /prefix/all/trusted./user.virtiofs./
+//! /bad/server//trusted./
+//! /bad/client/user.virtiofs.//
+//! /ok/all///
+//! ```
+//!
+//! The first rule prefixes client xattrnames with `trusted.` and strips
+//! `user.virtiofs.` from xattrnames included in the server reply.
+//!
+//! The second rule hides unprefixed `trusted.` attributes on the host.
+//!
+//! The third rule prevents the guest from manipulating the `user.virtiofs.`
+//! namespace directly.
+//!
+//! The final rule is the terminator and allows all remaining attributes
+//! through unchanged.
+
+#![deny(missing_docs)]
+
 use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::iter::Peekable;
 
+/// Expected error conditions with respect to parsing an XattrMap or
+/// attempting to match on a rule.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ErrorKind {
-    InvalidScope { got: String, expected: String },
-    InvalidType { got: String, expected: String },
+    /// Scope is not one of: "all", "server", "client".
+    InvalidScope {
+        /// The unexpected value parsed from the input stream.
+        got: String,
+
+        /// A list of the expected values.
+        expected: String,
+    },
+
+    /// Type is not one of "prefix", "ok", "bad", or "map".
+    InvalidType {
+        /// The unexpected value parsed from the input stream.
+        got: String,
+
+        /// A list of the expected values.
+        expected: String,
+    },
+
+    /// A delimiter has been found that does not match the delimiter
+    /// the rule started with.
     InvalidDelimiter,
+
+    /// The rule is missing fields.
     IncompleteRule,
+
+    /// There may only be one `map` rule and it must be the final
+    /// rule; if this error is returned, then multiple map rules
+    /// exist or one exists and it is not the final rule.
     MapRuleViolation,
+
+    /// The input stream doesn't contain any rules.
     NoRulesProvided,
+
+    /// None of the rules matched on the input.
     UnterminatedMapping,
 }
 
@@ -23,9 +152,13 @@ impl fmt::Display for ErrorKind {
     }
 }
 
+/// Errors specific to XattrMap operations.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Error {
+    /// The specific error condition that was detected.
     pub cause: ErrorKind,
+
+    /// The culpable rule, if any.
     pub rule: Option<usize>,
 }
 
@@ -181,12 +314,19 @@ impl Rule {
     }
 }
 
+/// A return value that indicates the xattr name input has passed through
+/// the XattrMap where a rule was successfully matched and applied to the
+/// xattrname.
 #[derive(Debug, Eq, PartialEq)]
 pub enum AppliedRule<'a> {
+    /// Server should the interior value onward through to the requested operation.
     Pass(Cow<'a, CStr>),
+
+    /// Server should return EPERM (i.e., this matched on a `bad` rule).
     Deny,
 }
 
+/// A collection of well-formed xattr translation rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct XattrMap {
     rules: Vec<Rule>,
