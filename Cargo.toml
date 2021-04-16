@@ -1,8 +1,15 @@
 [package]
 name = "virtiofsd-rs"
+description = "A virtio-fs vhost-user device daemon"
 version = "0.1.0"
 authors = ["The Cloud Hypervisor Authors"]
 edition = "2018"
+homepage = "https://virtio-fs.gitlab.io/"
+repository = "https://gitlab.com/virtio-fs/virtiofsd-rs"
+license = "Apache-2.0 AND BSD-3-Clause"
+readme = "README.md"
+
+exclude = [".gitlab-ci.yml"]
 
 [dependencies]
 bitflags = "1.2"
