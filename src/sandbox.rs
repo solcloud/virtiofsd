@@ -2,9 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use std::ffi::CString;
-use std::os::unix::io::RawFd;
-use std::{fmt, fs, io};
+use std::{ffi::CString, fmt, fs, io, os::unix::io::RawFd};
+use strum_macros::EnumString;
 
 use tempdir::TempDir;
 
@@ -69,7 +68,8 @@ impl fmt::Display for Error {
 }
 
 /// Mechanism to be used for setting up the sandbox.
-#[derive(PartialEq)]
+#[derive(Clone, Debug, EnumString, PartialEq)]
+#[strum(serialize_all = "snake_case")]
 pub enum SandboxMode {
     /// Create the sandbox using Linux namespaces.
     Namespace,

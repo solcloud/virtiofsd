@@ -20,6 +20,8 @@ libc = "~0.2.87"
 log = "0.4"
 # Match the version in vmm
 seccomp = { git = "https://github.com/firecracker-microvm/firecracker", tag = "v0.22.0" }
+strum = "0.20"
+strum_macros = "0.20"
 tempdir = "0.3"
 vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend", rev = "3c97ba5" }
 vhost = { git = "https://github.com/rust-vmm/vhost", features = ["vhost-user-slave"] }
