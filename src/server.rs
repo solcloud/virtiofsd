@@ -25,29 +25,29 @@ const DIRENT_PADDING: [u8; 8] = [0; 8];
 const CURRENT_DIR_CSTR: &[u8] = b".";
 const PARENT_DIR_CSTR: &[u8] = b"..";
 
-struct ZCReader<'a>(Reader<'a>);
+struct ZcReader<'a>(Reader<'a>);
 
-impl<'a> ZeroCopyReader for ZCReader<'a> {
+impl<'a> ZeroCopyReader for ZcReader<'a> {
     fn read_to(&mut self, f: &mut File, count: usize, off: u64) -> io::Result<usize> {
         self.0.read_to_at(f, count, off)
     }
 }
 
-impl<'a> io::Read for ZCReader<'a> {
+impl<'a> io::Read for ZcReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }
 }
 
-struct ZCWriter<'a>(Writer<'a>);
+struct ZcWriter<'a>(Writer<'a>);
 
-impl<'a> ZeroCopyWriter for ZCWriter<'a> {
+impl<'a> ZeroCopyWriter for ZcWriter<'a> {
     fn write_from(&mut self, f: &mut File, count: usize, off: u64) -> io::Result<usize> {
         self.0.write_from_at(f, count, off)
     }
 }
 
-impl<'a> io::Write for ZCWriter<'a> {
+impl<'a> io::Write for ZcWriter<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.0.write(buf)
     }
@@ -584,7 +584,7 @@ impl<F: FileSystem + Sync> Server<F> {
         };
 
         // Split the writer into 2 pieces: one for the `OutHeader` and the rest for the data.
-        let data_writer = ZCWriter(w.split_at(size_of::<OutHeader>()).unwrap());
+        let data_writer = ZcWriter(w.split_at(size_of::<OutHeader>()).unwrap());
 
         match self.fs.read(
             Context::from(in_header),
@@ -640,7 +640,7 @@ impl<F: FileSystem + Sync> Server<F> {
         let delayed_write = write_flags & WRITE_CACHE != 0;
         let kill_priv = write_flags & WRITE_KILL_PRIV != 0;
 
-        let data_reader = ZCReader(r);
+        let data_reader = ZcReader(r);
 
         match self.fs.write(
             Context::from(in_header),
