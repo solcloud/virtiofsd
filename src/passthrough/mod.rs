@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+pub mod stat;
 pub mod xattrmap;
 
 use super::fs_cache_req_handler::FsCacheReqHandler;
@@ -12,6 +13,7 @@ use crate::filesystem::{
 use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
 use crate::read_dir::ReadDir;
+use stat::{stat64, statx, StatExt};
 use std::borrow::Cow;
 use std::collections::btree_map;
 use std::collections::BTreeMap;
@@ -36,6 +38,7 @@ type Handle = u64;
 struct InodeAltKey {
     ino: libc::ino64_t,
     dev: libc::dev_t,
+    mnt_id: u64,
 }
 
 struct InodeData {
@@ -115,30 +118,6 @@ fn set_creds(
 
 fn ebadf() -> io::Error {
     io::Error::from_raw_os_error(libc::EBADF)
-}
-
-fn stat(f: &File) -> io::Result<libc::stat64> {
-    let mut st = MaybeUninit::<libc::stat64>::zeroed();
-
-    // Safe because this is a constant value and a valid C string.
-    let pathname = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
-
-    // Safe because the kernel will only write data in `st` and we check the return
-    // value.
-    let res = unsafe {
-        libc::fstatat64(
-            f.as_raw_fd(),
-            pathname.as_ptr(),
-            st.as_mut_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-        )
-    };
-    if res >= 0 {
-        // Safe because the kernel guarantees that the struct is now fully initialized.
-        Ok(unsafe { st.assume_init() })
-    } else {
-        Err(io::Error::last_os_error())
-    }
 }
 
 /// The caching policy that the file system should report to the FUSE client. By default the FUSE
@@ -308,6 +287,9 @@ pub struct PassthroughFs {
     // enabled in the configuration)
     announce_submounts: AtomicBool,
 
+    // Whether the statx() system call is available.
+    use_statx: bool,
+
     cfg: Config,
 }
 
@@ -337,6 +319,12 @@ impl PassthroughFs {
         // Safe because we just opened this fd or it was provided by our caller.
         let proc_self_fd = unsafe { File::from_raw_fd(fd) };
 
+        // Check for statx() system call
+        let use_statx = match statx(&proc_self_fd) {
+            Ok(_) => true,
+            Err(err) => !matches!(err.raw_os_error(), Some(libc::ENOSYS)),
+        };
+
         let mut fs = PassthroughFs {
             inodes: RwLock::new(MultikeyBTreeMap::new()),
             next_inode: AtomicU64::new(fuse::ROOT_ID + 1),
@@ -345,6 +333,7 @@ impl PassthroughFs {
             proc_self_fd,
             writeback: AtomicBool::new(false),
             announce_submounts: AtomicBool::new(false),
+            use_statx,
             cfg,
         };
 
@@ -363,6 +352,14 @@ impl PassthroughFs {
 
     pub fn keep_fds(&self) -> Vec<RawFd> {
         vec![self.proc_self_fd.as_raw_fd()]
+    }
+
+    fn stat(&self, f: &File) -> io::Result<StatExt> {
+        if self.use_statx {
+            statx(f)
+        } else {
+            stat64(f)
+        }
     }
 
     fn find_handle(&self, handle: Handle, inode: Inode) -> io::Result<Arc<HandleData>> {
@@ -451,18 +448,19 @@ impl PassthroughFs {
 
         let mut attr_flags: u32 = 0;
 
-        let st = stat(&f)?;
+        let st = self.stat(&f)?;
 
-        if st.st_mode & libc::S_IFDIR != 0
+        if st.st.st_mode & libc::S_IFDIR != 0
             && self.announce_submounts.load(Ordering::Relaxed)
-            && st.st_dev != p.key.dev
+            && (st.st.st_dev != p.key.dev || st.mnt_id != p.key.mnt_id)
         {
             attr_flags |= fuse::ATTR_SUBMOUNT;
         }
 
         let altkey = InodeAltKey {
-            ino: st.st_ino,
-            dev: st.st_dev,
+            ino: st.st.st_ino,
+            dev: st.st.st_dev,
+            mnt_id: st.mnt_id,
         };
         let data = self.inodes.read().unwrap().get_alt(&altkey).map(Arc::clone);
 
@@ -478,14 +476,16 @@ impl PassthroughFs {
             self.inodes.write().unwrap().insert(
                 inode,
                 InodeAltKey {
-                    ino: st.st_ino,
-                    dev: st.st_dev,
+                    ino: st.st.st_ino,
+                    dev: st.st.st_dev,
+                    mnt_id: st.mnt_id,
                 },
                 Arc::new(InodeData {
                     inode,
                     key: InodeAltKey {
-                        ino: st.st_ino,
-                        dev: st.st_dev,
+                        ino: st.st.st_ino,
+                        dev: st.st.st_dev,
+                        mnt_id: st.mnt_id,
                     },
                     file: f,
                     refcount: AtomicU64::new(1),
@@ -498,7 +498,7 @@ impl PassthroughFs {
         Ok(Entry {
             inode,
             generation: 0,
-            attr: st,
+            attr: st.st,
             attr_flags,
             attr_timeout: self.cfg.attr_timeout,
             entry_timeout: self.cfg.entry_timeout,
@@ -562,7 +562,7 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = stat(&data.file)?;
+        let st = self.stat(&data.file)?.st;
 
         Ok((st, self.cfg.attr_timeout))
     }
@@ -682,7 +682,7 @@ impl FileSystem for PassthroughFs {
         // Safe because we just opened this fd above.
         let f = unsafe { File::from_raw_fd(fd) };
 
-        let st = stat(&f)?;
+        let st = self.stat(&f)?;
 
         // Safe because this doesn't modify any memory and there is no need to check the return
         // value because this system call always succeeds. We need to clear the umask here because
@@ -695,14 +695,16 @@ impl FileSystem for PassthroughFs {
         inodes.insert(
             fuse::ROOT_ID,
             InodeAltKey {
-                ino: st.st_ino,
-                dev: st.st_dev,
+                ino: st.st.st_ino,
+                dev: st.st.st_dev,
+                mnt_id: st.mnt_id,
             },
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
                 key: InodeAltKey {
-                    ino: st.st_ino,
-                    dev: st.st_dev,
+                    ino: st.st.st_ino,
+                    dev: st.st.st_dev,
+                    mnt_id: st.mnt_id,
                 },
                 file: f,
                 refcount: AtomicU64::new(2),
@@ -1395,7 +1397,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let st = stat(&data.file)?;
+        let st = self.stat(&data.file)?.st;
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
         if mode == libc::F_OK {
