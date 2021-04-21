@@ -9,7 +9,7 @@ clippy:
   before_script:
     - rustup component add clippy
   script:
-    - cargo clippy --verbose
+    - cargo clippy --verbose -- -Dwarnings
 
 fmt:
   before_script:
