@@ -991,11 +991,13 @@ impl FileSystem for PassthroughFs {
         kill_priv: bool,
         _flags: u32,
     ) -> io::Result<usize> {
-        if kill_priv {
+        let _killpriv_guard = if kill_priv {
             // We need to change credentials during a write so that the kernel will remove setuid
             // or setgid bits from the file if it was written to by someone other than the owner.
-            let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
-        }
+            Some(set_creds(ctx.uid, ctx.gid)?)
+        } else {
+            None
+        };
 
         let data = self.find_handle(handle, inode)?;
 
