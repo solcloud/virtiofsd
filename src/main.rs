@@ -2,17 +2,18 @@
 //
 // SPDX-License-Identifier: (Apache-2.0 AND BSD-3-Clause)
 
-use clap::{crate_authors, crate_version, App, Arg};
 use futures::executor::{ThreadPool, ThreadPoolBuilder};
 use libc::EFD_NONBLOCK;
 use log::*;
 use passthrough::xattrmap::XattrMap;
 use seccomp::SeccompAction;
-use std::sync::{Arc, Mutex, RwLock};
 use std::{
     convert::{self, TryFrom},
     error, fmt, io, process,
+    sync::{Arc, Mutex, RwLock},
 };
+
+use structopt::StructOpt;
 
 use vhost::vhost_user::message::*;
 use vhost::vhost_user::{Listener, SlaveFsCacheReq};
@@ -35,7 +36,6 @@ use vmm_sys_util::eventfd::EventFd;
 
 const QUEUE_SIZE: usize = 1024;
 const NUM_QUEUES: usize = 2;
-const THREAD_POOL_SIZE: usize = 64;
 
 // The guest queued an available buffer for the high priority queue.
 const HIPRIO_QUEUE_EVENT: u16 = 0;
@@ -295,114 +295,70 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend for VhostUserFsBack
     }
 }
 
-fn main() {
-    let cmd_arguments = App::new("virtiofsd backend")
-        .version(crate_version!())
-        .author(crate_authors!())
-        .about("Launch a virtiofsd backend.")
-        .arg(
-            Arg::with_name("shared-dir")
-                .long("shared-dir")
-                .help("Shared directory path")
-                .takes_value(true)
-                .min_values(1)
-                .required(true),
-        )
-        .arg(
-            Arg::with_name("sock")
-                .long("sock")
-                .help("vhost-user socket path (deprecated)")
-                .takes_value(true)
-                .min_values(1),
-        )
-        .arg(
-            Arg::with_name("socket")
-                .long("socket")
-                .help("vhost-user socket path")
-                .takes_value(true)
-                .min_values(1)
-                .required_unless("sock"),
-        )
-        .arg(
-            Arg::with_name("thread-pool-size")
-                .long("thread-pool-size")
-                .help("thread pool size (default 64)")
-                .takes_value(true)
-                .min_values(1),
-        )
-        .arg(
-            Arg::with_name("disable-xattr")
-                .long("disable-xattr")
-                .help("Disable support for extended attributes"),
-        )
-        .arg(
-            Arg::with_name("xattrmap")
-                .long("xattrmap")
-                .help("Add custom rules for extended attributes")
-                .takes_value(true)
-                .number_of_values(1)
-                .conflicts_with("disable-xattr"),
-        )
-        .arg(
-            Arg::with_name("sandbox")
-                .long("sandbox")
-                .help("Sandbox mechanism to isolate the daemon process")
-                .possible_values(&["namespace", "chroot", "none"])
-                .default_value("namespace"),
-        )
-        .arg(
-            Arg::with_name("seccomp")
-                .long("seccomp")
-                .help("Disable/debug seccomp security")
-                .possible_values(&["kill", "log", "trap", "none"])
-                .default_value("kill"),
-        )
-        .arg(
-            Arg::with_name("no-announce-submounts")
-                .long("no-announce-submounts")
-                .help("Don't tell the guest which directories are mount points"),
-        )
-        .get_matches();
-
-    // Retrieve arguments
-    let shared_dir = cmd_arguments
-        .value_of("shared-dir")
-        .expect("Failed to retrieve shared directory path");
-    let socket = match cmd_arguments.value_of("socket") {
-        Some(path) => path,
-        None => {
-            println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
-            cmd_arguments
-                .value_of("sock")
-                .expect("Failed to retrieve vhost-user socket path")
-        }
-    };
-
-    let thread_pool_size: usize = match cmd_arguments.value_of("thread-pool-size") {
-        Some(size) => size.parse().expect("Invalid argument for thread-pool-size"),
-        None => THREAD_POOL_SIZE,
-    };
-    let xattr: bool = !cmd_arguments.is_present("disable-xattr");
-    let xattrmap = match cmd_arguments.value_of("xattrmap") {
-        None => None,
-        Some(rules) => Some(XattrMap::try_from(rules).expect("xattrmap rule parsing failed")),
-    };
-
-    let sandbox_mode: SandboxMode = match cmd_arguments.value_of("sandbox").unwrap() {
-        "namespace" => SandboxMode::Namespace,
-        "chroot" => SandboxMode::Chroot,
-        "none" => SandboxMode::None,
-        _ => unreachable!(), // We told Arg possible_values
-    };
-
-    let seccomp_mode: SeccompAction = match cmd_arguments.value_of("seccomp").unwrap() {
+fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> {
+    Ok(match src {
         "none" => SeccompAction::Allow, // i.e. no seccomp
         "kill" => SeccompAction::Kill,
         "log" => SeccompAction::Log,
         "trap" => SeccompAction::Trap,
-        _ => unreachable!(), // We told Arg possible_values
-    };
-    let announce_submounts: bool = !cmd_arguments.is_present("no-announce-submounts");
+        _ => return Err("Matching variant not found"),
+    })
+}
+
+#[derive(Debug, StructOpt)]
+#[structopt(name = "virtiofsd backend", about = "Launch a virtiofsd backend.")]
+struct Opt {
+    /// Shared directory path
+    #[structopt(long)]
+    shared_dir: String,
+
+    /// vhost-user socket path [deprecated]
+    #[structopt(long)]
+    sock: Option<String>,
+
+    /// vhost-user socket path
+    #[structopt(long, required_unless = "sock")]
+    socket: Option<String>,
+
+    /// Maximum thread pool size
+    #[structopt(long, default_value = "64")]
+    thread_pool_size: usize,
+
+    /// Disable support for extended attributes
+    #[structopt(long)]
+    disable_xattr: bool,
+
+    /// Add custom rules for translating extended attributes between host and guest
+    #[structopt(long, conflicts_with = "disable-xattr", parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
+    xattrmap: Option<XattrMap>,
+
+    /// Sandbox mechanism to isolate the daemon process
+    #[structopt(long, default_value = "namespace")]
+    sandbox: SandboxMode,
+
+    /// Disable/debug seccomp security
+    #[structopt(long, parse(try_from_str = parse_seccomp), default_value = "kill")]
+    seccomp: SeccompAction,
+
+    /// Don't tell the guest which directories are mount points
+    #[structopt(long)]
+    no_announce_submounts: bool,
+}
+
+fn main() {
+    let opt = Opt::from_args();
+
+    let shared_dir = opt.shared_dir.as_str();
+    let socket = opt.socket.as_ref().unwrap_or_else(|| {
+        println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
+        opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
+    });
+    let xattr = !opt.disable_xattr;
+    let announce_submounts = !opt.no_announce_submounts;
+    let sandbox_mode = opt.sandbox.clone();
+    let xattrmap = opt.xattrmap.clone();
+    let seccomp_mode = opt.seccomp.clone();
+    let thread_pool_size = opt.thread_pool_size;
 
     let listener = Listener::new(socket, true).unwrap();
 
