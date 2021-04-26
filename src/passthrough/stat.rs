@@ -106,6 +106,26 @@ impl SafeStatXAccess for libc::statx {
     }
 }
 
+// Only works on Linux, and libc::SYS_statx is only defined for these
+// environments
+#[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
+/// Performs a statx() syscall.  libc provides libc::statx() that does
+/// the same, however, the system's libc may not have a statx() wrapper
+/// (e.g. glibc before 2.28), so linking to it may fail.
+/// libc::syscall() and libc::SYS_statx are always present, though, so
+/// we can safely rely on them.
+unsafe fn do_statx(
+    dirfd: libc::c_int,
+    pathname: *const libc::c_char,
+    flags: libc::c_int,
+    mask: libc::c_uint,
+    statxbuf: *mut libc::statx,
+) -> libc::c_int {
+    libc::syscall(libc::SYS_statx, dirfd, pathname, flags, mask, statxbuf) as libc::c_int
+}
+
+// Real statx() that depends on do_statx()
+#[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
 pub fn statx(f: &File) -> io::Result<StatExt> {
     let mut stx_ui = MaybeUninit::<libc::statx>::zeroed();
 
@@ -115,7 +135,7 @@ pub fn statx(f: &File) -> io::Result<StatExt> {
     // Safe because the kernel will only write data in `stx_ui` and we
     // check the return value.
     let res = unsafe {
-        libc::statx(
+        do_statx(
             f.as_raw_fd(),
             pathname.as_ptr(),
             libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
@@ -137,4 +157,10 @@ pub fn statx(f: &File) -> io::Result<StatExt> {
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+// Fallback for when do_statx() is not available
+#[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
+pub fn statx(_f: &File) -> io::Result<StatExt> {
+    Err(io::Error::from_raw_os_error(libc::ENOSYS))
 }
