@@ -1079,6 +1079,8 @@ impl FileSystem for PassthroughFs {
                 ::std::u32::MAX
             };
 
+            self.drop_security_capability(inode_data.file.as_raw_fd())?;
+
             // Safe because this is a constant value and a valid C string.
             let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
 
@@ -1100,11 +1102,14 @@ impl FileSystem for PassthroughFs {
         if valid.contains(SetattrValid::SIZE) {
             // Safe because this doesn't modify any memory and we check the return value.
             let res = match data {
-                Data::Handle(_, fd) => unsafe { libc::ftruncate(fd, attr.st_size) },
+                Data::Handle(_, fd) => self
+                    .drop_security_capability(fd)
+                    .map(|_| unsafe { libc::ftruncate(fd, attr.st_size) })?,
                 _ => {
                     // There is no `ftruncateat` so we need to get a new fd and truncate it.
                     let f = self.open_inode(inode, libc::O_NONBLOCK | libc::O_RDWR)?;
-                    unsafe { libc::ftruncate(f.as_raw_fd(), attr.st_size) }
+                    self.drop_security_capability(f.as_raw_fd())
+                        .map(|_| unsafe { libc::ftruncate(f.as_raw_fd(), attr.st_size) })?
                 }
             };
             if res < 0 {
