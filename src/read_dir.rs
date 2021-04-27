@@ -118,7 +118,7 @@ fn strip_padding(b: &[u8]) -> &CStr {
 
     // Safe because we are creating this string with the first nul-byte we found so we can
     // guarantee that it is nul-terminated and doesn't contain any interior nuls.
-    unsafe { CStr::from_bytes_with_nul_unchecked(&b[..pos + 1]) }
+    unsafe { CStr::from_bytes_with_nul_unchecked(&b[..=pos]) }
 }
 
 #[cfg(test)]

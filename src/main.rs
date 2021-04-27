@@ -259,13 +259,13 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend for VhostUserFsBack
             _ => return Err(Error::HandleEventUnknownEvent.into()),
         };
 
+        let mut vring = vring_lock.write().unwrap();
+        let queue = vring.mut_queue();
         if thread.event_idx {
             // vm-virtio's Queue implementation only checks avail_index
             // once, so to properly support EVENT_IDX we need to keep
             // calling process_queue() until it stops finding new
             // requests on the queue.
-            let mut vring = vring_lock.write().unwrap();
-            let queue = vring.mut_queue();
             loop {
                 queue.disable_notification().unwrap();
                 thread.process_queue(queue, vring_lock.clone())?;
@@ -275,8 +275,6 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend for VhostUserFsBack
             }
         } else {
             // Without EVENT_IDX, a single call is enough.
-            let mut vring = vring_lock.write().unwrap();
-            let queue = vring.mut_queue();
             thread.process_queue(queue, vring_lock.clone())?;
         }
 

@@ -194,7 +194,7 @@ impl Scope {
     fn from_bytes<B: AsRef<[u8]>>(bytes: B) -> Result<Self, ErrorKind> {
         let bytes = bytes.as_ref();
 
-        Ok(match &bytes[..] {
+        Ok(match bytes {
             b"all" => Scope::CLIENT | Scope::SERVER,
             b"client" => Scope::CLIENT,
             b"server" => Scope::SERVER,
@@ -220,7 +220,7 @@ impl Type {
     fn from_bytes<B: AsRef<[u8]>>(bytes: B) -> Result<Self, ErrorKind> {
         let bytes = bytes.as_ref();
 
-        Ok(match &bytes[..] {
+        Ok(match bytes {
             b"prefix" => Type::Prefix,
             b"ok" => Type::Okay,
             b"bad" => Type::Bad,
