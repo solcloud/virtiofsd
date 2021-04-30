@@ -1237,7 +1237,17 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let inode_file = inode_data.get_file(&self.mount_fds)?;
+        // In this case, we need to open a new O_RDWR FD
+        let rdwr_inode_file = handle.is_none() && valid.intersects(SetattrValid::SIZE);
+        let inode_file = if rdwr_inode_file {
+            inode_data.open_file(
+                libc::O_NONBLOCK | libc::O_RDWR,
+                &self.proc_self_fd,
+                &self.mount_fds,
+            )?
+        } else {
+            inode_data.get_file(&self.mount_fds)?
+        };
 
         enum Data {
             Handle(Arc<HandleData>, RawFd),
@@ -1306,18 +1316,19 @@ impl FileSystem for PassthroughFs {
         }
 
         if valid.contains(SetattrValid::SIZE) {
-            // Safe because this doesn't modify any memory and we check the return value.
-            let res = match data {
-                Data::Handle(_, fd) => self
-                    .drop_security_capability(fd)
-                    .map(|_| unsafe { libc::ftruncate(fd, attr.st_size) })?,
+            let fd = match data {
+                Data::Handle(_, fd) => fd,
                 _ => {
-                    // There is no `ftruncateat` so we need to get a new fd and truncate it.
-                    let f = self.open_inode(inode, libc::O_NONBLOCK | libc::O_RDWR)?;
-                    self.drop_security_capability(f.as_raw_fd())
-                        .map(|_| unsafe { libc::ftruncate(f.as_raw_fd(), attr.st_size) })?
+                    // Should have opened an O_RDWR inode_file above
+                    assert!(rdwr_inode_file);
+                    inode_file.as_raw_fd()
                 }
             };
+
+            // Safe because this doesn't modify any memory and we check the return value.
+            let res = self
+                .drop_security_capability(fd)
+                .map(|_| unsafe { libc::ftruncate(fd, attr.st_size) })?;
             if res < 0 {
                 return Err(io::Error::last_os_error());
             }
