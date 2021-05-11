@@ -37,10 +37,12 @@ type Inode = u64;
 type Handle = u64;
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
-struct InodeAltKey {
-    ino: libc::ino64_t,
-    dev: libc::dev_t,
-    mnt_id: u64,
+enum InodeAltKey {
+    Ids {
+        ino: libc::ino64_t,
+        dev: libc::dev_t,
+        mnt_id: u64,
+    },
 }
 
 enum FileOrHandle {
@@ -551,12 +553,17 @@ impl PassthroughFs {
             attr_flags |= fuse::ATTR_SUBMOUNT;
         }
 
-        let altkey = InodeAltKey {
+        let ids_altkey = InodeAltKey::Ids {
             ino: st.st.st_ino,
             dev: st.st.st_dev,
             mnt_id: st.mnt_id,
         };
-        let data = self.inodes.read().unwrap().get_alt(&altkey).map(Arc::clone);
+        let data = self
+            .inodes
+            .read()
+            .unwrap()
+            .get_alt(&ids_altkey)
+            .map(Arc::clone);
 
         let inode = if let Some(data) = data {
             // Matches with the release store in `forget`.
@@ -579,7 +586,7 @@ impl PassthroughFs {
                     mnt_id: st.mnt_id,
                 }),
             );
-            inodes.insert_alt(altkey, inode);
+            inodes.insert_alt(ids_altkey, inode);
 
             inode
         };
@@ -795,7 +802,7 @@ impl FileSystem for PassthroughFs {
             }),
         );
         inodes.insert_alt(
-            InodeAltKey {
+            InodeAltKey::Ids {
                 ino: st.st.st_ino,
                 dev: st.st.st_dev,
                 mnt_id: st.mnt_id,
