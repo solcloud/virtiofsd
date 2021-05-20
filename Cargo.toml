@@ -13,6 +13,7 @@ exclude = [".gitlab-ci.yml"]
 
 [dependencies]
 bitflags = "1.2"
+caps = "0.5"
 epoll = "4.3"
 futures = { version = "0.3", features = ["thread-pool"] }
 libc = "~0.2.87"

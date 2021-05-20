@@ -388,6 +388,33 @@ fn main() {
         enable_seccomp(seccomp_mode).unwrap();
     };
 
+    if opt.inode_file_handles {
+        use caps::{CapSet, Capability};
+
+        // --inode-file-handles requires CAP_DAC_READ_SEARCH.  Check it here to save the user some
+        // head-scratching due to getting nothing but EPERMs after mounting.
+        match caps::has_cap(None, CapSet::Effective, Capability::CAP_DAC_READ_SEARCH) {
+            // Perfect, we have CAP_DAC_READ_SEARCH
+            Ok(true) => (),
+
+            // We do not have CAP_DAC_READ_SEARCH, error out
+            Ok(false) => {
+                eprintln!(
+                    "error: --inode-file-handles requires the cap_dac_read_search capability, \
+                            which virtiofsd-rs does not have"
+                );
+                process::exit(1);
+            }
+
+            // We do not know, so print a warning but do not exit
+            Err(e) => eprintln!(
+                "warning: --inode-file-handles requires the cap_dac_read_search capability, \
+                        but inquiring virtiofsd-rs's set of capabilities failed: {}",
+                e
+            ),
+        }
+    }
+
     let fs = PassthroughFs::new(fs_cfg).unwrap();
     let fs_backend = Arc::new(RwLock::new(
         VhostUserFsBackend::new(fs, thread_pool_size).unwrap(),
