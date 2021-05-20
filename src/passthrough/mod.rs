@@ -567,13 +567,10 @@ impl PassthroughFs {
             // into the inode list.  However, since each of those will get a unique Inode
             // value and unique file descriptors this shouldn't be that much of a problem.
             let inode = self.next_inode.fetch_add(1, Ordering::Relaxed);
-            self.inodes.write().unwrap().insert(
+            let mut inodes = self.inodes.write().unwrap();
+
+            inodes.insert(
                 inode,
-                InodeAltKey {
-                    ino: st.st.st_ino,
-                    dev: st.st.st_dev,
-                    mnt_id: st.mnt_id,
-                },
                 Arc::new(InodeData {
                     inode,
                     file_or_handle: FileOrHandle::File(f),
@@ -582,6 +579,7 @@ impl PassthroughFs {
                     mnt_id: st.mnt_id,
                 }),
             );
+            inodes.insert_alt(altkey, inode);
 
             inode
         };
@@ -788,11 +786,6 @@ impl FileSystem for PassthroughFs {
         // Not sure why the root inode gets a refcount of 2 but that's what libfuse does.
         inodes.insert(
             fuse::ROOT_ID,
-            InodeAltKey {
-                ino: st.st.st_ino,
-                dev: st.st.st_dev,
-                mnt_id: st.mnt_id,
-            },
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
                 file_or_handle: FileOrHandle::File(f),
@@ -800,6 +793,14 @@ impl FileSystem for PassthroughFs {
                 dev: st.st.st_dev,
                 mnt_id: st.mnt_id,
             }),
+        );
+        inodes.insert_alt(
+            InodeAltKey {
+                ino: st.st.st_ino,
+                dev: st.st.st_dev,
+                mnt_id: st.mnt_id,
+            },
+            fuse::ROOT_ID,
         );
 
         let mut opts = FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO;
