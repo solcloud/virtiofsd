@@ -51,10 +51,13 @@ enum FileOrHandle {
 
 struct InodeData {
     inode: Inode,
-    key: InodeAltKey,
     // Most of these aren't actually files but ¯\_(ツ)_/¯.
     file_or_handle: FileOrHandle,
     refcount: AtomicU64,
+
+    // Required to detect submounts
+    dev: libc::dev_t,
+    mnt_id: u64,
 }
 
 /**
@@ -543,7 +546,7 @@ impl PassthroughFs {
 
         if st.st.st_mode & libc::S_IFDIR != 0
             && self.announce_submounts.load(Ordering::Relaxed)
-            && (st.st.st_dev != p.key.dev || st.mnt_id != p.key.mnt_id)
+            && (st.st.st_dev != p.dev || st.mnt_id != p.mnt_id)
         {
             attr_flags |= fuse::ATTR_SUBMOUNT;
         }
@@ -573,13 +576,10 @@ impl PassthroughFs {
                 },
                 Arc::new(InodeData {
                     inode,
-                    key: InodeAltKey {
-                        ino: st.st.st_ino,
-                        dev: st.st.st_dev,
-                        mnt_id: st.mnt_id,
-                    },
                     file_or_handle: FileOrHandle::File(f),
                     refcount: AtomicU64::new(1),
+                    dev: st.st.st_dev,
+                    mnt_id: st.mnt_id,
                 }),
             );
 
@@ -795,13 +795,10 @@ impl FileSystem for PassthroughFs {
             },
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
-                key: InodeAltKey {
-                    ino: st.st.st_ino,
-                    dev: st.st.st_dev,
-                    mnt_id: st.mnt_id,
-                },
                 file_or_handle: FileOrHandle::File(f),
                 refcount: AtomicU64::new(2),
+                dev: st.st.st_dev,
+                mnt_id: st.mnt_id,
             }),
         );
 
