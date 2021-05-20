@@ -354,7 +354,7 @@ impl PassthroughFs {
         vec![self.proc_self_fd.as_raw_fd()]
     }
 
-    fn stat(&self, dir: &File, path: Option<&CStr>) -> io::Result<StatExt> {
+    fn stat(&self, dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
         if self.use_statx {
             statx(dir, path)
         } else {

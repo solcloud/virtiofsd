@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 use std::ffi::CStr;
-use std::fs::File;
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::io::AsRawFd;
@@ -15,7 +14,7 @@ pub struct StatExt {
     pub mnt_id: u64,
 }
 
-pub fn stat64(dir: &File, path: Option<&CStr>) -> io::Result<StatExt> {
+pub fn stat64(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
     let mut st = MaybeUninit::<libc::stat64>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
@@ -126,7 +125,7 @@ unsafe fn do_statx(
 
 // Real statx() that depends on do_statx()
 #[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
-pub fn statx(dir: &File, path: Option<&CStr>) -> io::Result<StatExt> {
+pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
     let mut stx_ui = MaybeUninit::<libc::statx>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
@@ -161,6 +160,6 @@ pub fn statx(dir: &File, path: Option<&CStr>) -> io::Result<StatExt> {
 
 // Fallback for when do_statx() is not available
 #[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
-pub fn statx(_dir: &File, _path: Option<&CStr>) -> io::Result<StatExt> {
+pub fn statx(_dir: &impl AsRawFd, _path: Option<&CStr>) -> io::Result<StatExt> {
     Err(io::Error::from_raw_os_error(libc::ENOSYS))
 }
