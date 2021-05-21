@@ -219,7 +219,9 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend for VhostUserFsBack
     }
 
     fn protocol_features(&self) -> VhostUserProtocolFeatures {
-        VhostUserProtocolFeatures::MQ | VhostUserProtocolFeatures::SLAVE_REQ
+        VhostUserProtocolFeatures::MQ
+            | VhostUserProtocolFeatures::SLAVE_REQ
+            | VhostUserProtocolFeatures::SLAVE_SEND_FD
     }
 
     fn set_event_idx(&mut self, enabled: bool) {
