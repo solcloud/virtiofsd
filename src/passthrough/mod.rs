@@ -49,6 +49,35 @@ struct InodeData {
     refcount: AtomicU64,
 }
 
+/// Open `/proc/self/fd/{fd}` with the given flags to effectively duplicate the given `fd` with new
+/// flags (e.g. to turn an `O_PATH` file descriptor into one that can be used for I/O).
+fn reopen_fd_through_proc(
+    fd: &impl AsRawFd,
+    flags: libc::c_int,
+    proc_self_fd: &File,
+) -> io::Result<File> {
+    let fd_cstr = CString::new(format!("{}", fd.as_raw_fd()))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Safe because this doesn't modify any memory and we check the return value. We don't
+    // really check `flags` because if the kernel can't handle poorly specified flags then we
+    // have much bigger problems. Also, clear the `O_NOFOLLOW` flag if it is set since we need
+    // to follow the `/proc/self/fd` symlink to get the file.
+    let new_fd = unsafe {
+        libc::openat(
+            proc_self_fd.as_raw_fd(),
+            fd_cstr.as_ptr(),
+            flags & !libc::O_NOFOLLOW,
+        )
+    };
+    if new_fd >= 0 {
+        // Safe because we just opened this fd.
+        Ok(unsafe { File::from_raw_fd(new_fd) })
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 struct HandleData {
     inode: Inode,
     file: RwLock<File>,
@@ -381,9 +410,6 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let pathname = CString::new(format!("{}", data.file.as_raw_fd()))
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
         // When writeback caching is enabled, the kernel may send read requests even if the
         // userspace program opened the file write-only. So we need to ensure that we have opened
         // the file for reading as well as writing.
@@ -403,23 +429,7 @@ impl PassthroughFs {
             flags &= !libc::O_APPEND;
         }
 
-        // Safe because this doesn't modify any memory and we check the return value. We don't
-        // really check `flags` because if the kernel can't handle poorly specified flags then we
-        // have much bigger problems. Also, clear the `O_NOFOLLOW` flag if it is set since we need
-        // to follow the `/proc/self/fd` symlink to get the file.
-        let fd = unsafe {
-            libc::openat(
-                self.proc_self_fd.as_raw_fd(),
-                pathname.as_ptr(),
-                (flags | libc::O_CLOEXEC) & (!libc::O_NOFOLLOW),
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        // Safe because we just opened this fd.
-        Ok(unsafe { File::from_raw_fd(fd) })
+        reopen_fd_through_proc(&data.file, flags | libc::O_CLOEXEC, &self.proc_self_fd)
     }
 
     fn do_lookup(&self, parent: Inode, name: &CStr) -> io::Result<Entry> {
