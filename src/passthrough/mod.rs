@@ -42,11 +42,16 @@ struct InodeAltKey {
     mnt_id: u64,
 }
 
+enum FileOrHandle {
+    File(File),
+    // TODO: Add file handle variant
+}
+
 struct InodeData {
     inode: Inode,
     key: InodeAltKey,
     // Most of these aren't actually files but ¯\_(ツ)_/¯.
-    file: File,
+    file_or_handle: FileOrHandle,
     refcount: AtomicU64,
 }
 
@@ -94,14 +99,20 @@ fn reopen_fd_through_proc(
 impl<'a> InodeData {
     /// Get an `O_PATH` file for this inode
     fn get_file(&'a self) -> io::Result<InodeFile<'a>> {
-        Ok(InodeFile::Ref(&self.file))
+        match &self.file_or_handle {
+            FileOrHandle::File(f) => Ok(InodeFile::Ref(f)),
+        }
     }
 
     /// Open this inode with the given flags
     /// (always returns a new (i.e. `Owned`) file, hence the static lifetime)
     fn open_file(&self, flags: libc::c_int, proc_self_fd: &File) -> io::Result<InodeFile<'static>> {
-        let file = reopen_fd_through_proc(&self.file, flags, proc_self_fd)?;
-        Ok(InodeFile::Owned(file))
+        match &self.file_or_handle {
+            FileOrHandle::File(f) => {
+                let new_file = reopen_fd_through_proc(f, flags, proc_self_fd)?;
+                Ok(InodeFile::Owned(new_file))
+            }
+        }
     }
 }
 
@@ -548,7 +559,7 @@ impl PassthroughFs {
                         dev: st.st.st_dev,
                         mnt_id: st.mnt_id,
                     },
-                    file: f,
+                    file_or_handle: FileOrHandle::File(f),
                     refcount: AtomicU64::new(1),
                 }),
             );
@@ -770,7 +781,7 @@ impl FileSystem for PassthroughFs {
                     dev: st.st.st_dev,
                     mnt_id: st.mnt_id,
                 },
-                file: f,
+                file_or_handle: FileOrHandle::File(f),
                 refcount: AtomicU64::new(2),
             }),
         );
