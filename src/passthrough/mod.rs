@@ -43,12 +43,23 @@ enum InodeAltKey {
         dev: libc::dev_t,
         mnt_id: u64,
     },
+    #[allow(dead_code)]
+    Handle(FileHandle),
 }
 
 enum FileOrHandle {
     File(File),
     #[allow(dead_code)]
     Handle(FileHandle),
+}
+
+impl FileOrHandle {
+    fn handle(&self) -> Option<&FileHandle> {
+        match self {
+            FileOrHandle::File(_) => None,
+            FileOrHandle::Handle(h) => Some(h),
+        }
+    }
 }
 
 struct InodeData {
@@ -558,12 +569,30 @@ impl PassthroughFs {
             dev: st.st.st_dev,
             mnt_id: st.mnt_id,
         };
-        let data = self
-            .inodes
-            .read()
-            .unwrap()
-            .get_alt(&ids_altkey)
-            .map(Arc::clone);
+        // TODO: Once we generate file handles, set this
+        let handle_altkey: Option<InodeAltKey> = None;
+
+        let data = {
+            let inodes = self.inodes.read().unwrap();
+
+            handle_altkey
+                .map(|altkey| inodes.get_alt(&altkey))
+                .flatten()
+                .or_else(|| {
+                    inodes.get_alt(&ids_altkey).filter(|data| {
+                        // When we have to fall back to looking up an inode by its IDs, ensure that
+                        // we hit an entry that does not have a file handle.  Entries with file
+                        // handles must also have a handle alt key, so if we have not found it by
+                        // that handle alt key, we must have found an entry with a mismatching
+                        // handle; i.e. an entry for a different file, even though it has the same
+                        // inode ID.
+                        // (This can happen when we look up a new file that has reused the inode ID
+                        // of some previously unlinked inode we still have in `.inodes`.)
+                        handle_altkey.is_none() || data.file_or_handle.handle().is_none()
+                    })
+                })
+                .map(Arc::clone)
+        };
 
         let inode = if let Some(data) = data {
             // Matches with the release store in `forget`.
@@ -587,6 +616,9 @@ impl PassthroughFs {
                 }),
             );
             inodes.insert_alt(ids_altkey, inode);
+            if let Some(altkey) = handle_altkey {
+                inodes.insert_alt(altkey, inode);
+            }
 
             inode
         };
@@ -788,6 +820,8 @@ impl FileSystem for PassthroughFs {
         // we want the client to be able to set all the bits in the mode.
         unsafe { libc::umask(0o000) };
 
+        let handle_altkey: Option<InodeAltKey> = None;
+
         let mut inodes = self.inodes.write().unwrap();
 
         // Not sure why the root inode gets a refcount of 2 but that's what libfuse does.
@@ -809,6 +843,9 @@ impl FileSystem for PassthroughFs {
             },
             fuse::ROOT_ID,
         );
+        if let Some(altkey) = handle_altkey {
+            inodes.insert_alt(altkey, fuse::ROOT_ID);
+        }
 
         let mut opts = FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO;
         if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {

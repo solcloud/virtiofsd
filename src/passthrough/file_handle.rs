@@ -21,6 +21,7 @@ pub struct MountFds {
     map: RwLock<HashMap<u64, File>>,
 }
 
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 #[repr(C)]
 struct CFileHandle {
     handle_bytes: libc::c_uint,
@@ -28,6 +29,7 @@ struct CFileHandle {
     f_handle: [libc::c_char; MAX_HANDLE_SZ],
 }
 
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 pub struct FileHandle {
     mnt_id: u64,
     handle: CFileHandle,
