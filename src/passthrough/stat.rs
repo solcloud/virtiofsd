@@ -76,20 +76,20 @@ impl SafeStatXAccess for libc::statx {
 
             st.st_dev = makedev(self.stx_dev_major, self.stx_dev_minor);
             st.st_ino = self.stx_ino;
-            st.st_mode = self.stx_mode as u32;
-            st.st_nlink = self.stx_nlink as u64;
+            st.st_mode = self.stx_mode as _;
+            st.st_nlink = self.stx_nlink as _;
             st.st_uid = self.stx_uid;
             st.st_gid = self.stx_gid;
             st.st_rdev = makedev(self.stx_rdev_major, self.stx_rdev_minor);
-            st.st_size = self.stx_size as i64;
-            st.st_blksize = self.stx_blksize as i64;
-            st.st_blocks = self.stx_blocks as i64;
+            st.st_size = self.stx_size as _;
+            st.st_blksize = self.stx_blksize as _;
+            st.st_blocks = self.stx_blocks as _;
             st.st_atime = self.stx_atime.tv_sec;
-            st.st_atime_nsec = self.stx_atime.tv_nsec as i64;
+            st.st_atime_nsec = self.stx_atime.tv_nsec as _;
             st.st_mtime = self.stx_mtime.tv_sec;
-            st.st_mtime_nsec = self.stx_mtime.tv_nsec as i64;
+            st.st_mtime_nsec = self.stx_mtime.tv_nsec as _;
             st.st_ctime = self.stx_ctime.tv_sec;
-            st.st_ctime_nsec = self.stx_ctime.tv_nsec as i64;
+            st.st_ctime_nsec = self.stx_ctime.tv_nsec as _;
 
             Some(st)
         } else {
