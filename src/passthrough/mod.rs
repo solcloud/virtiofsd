@@ -797,7 +797,6 @@ impl FileSystem for PassthroughFs {
         mode: u32,
         umask: u32,
     ) -> io::Result<Entry> {
-        let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
         let data = self
             .inodes
             .read()
@@ -806,8 +805,12 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe { libc::mkdirat(data.file.as_raw_fd(), name.as_ptr(), mode & !umask) };
+        let res = {
+            let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
+
+            // Safe because this doesn't modify any memory and we check the return value.
+            unsafe { libc::mkdirat(data.file.as_raw_fd(), name.as_ptr(), mode & !umask) }
+        };
         if res == 0 {
             self.do_lookup(parent, name)
         } else {
@@ -873,7 +876,6 @@ impl FileSystem for PassthroughFs {
         flags: u32,
         umask: u32,
     ) -> io::Result<(Entry, Option<Handle>, OpenOptions)> {
-        let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
         let data = self
             .inodes
             .read()
@@ -882,16 +884,20 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        // Safe because this doesn't modify any memory and we check the return value. We don't
-        // really check `flags` because if the kernel can't handle poorly specified flags then we
-        // have much bigger problems.
-        let fd = unsafe {
-            libc::openat(
-                data.file.as_raw_fd(),
-                name.as_ptr(),
-                flags as i32 | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                mode & !(umask & 0o777),
-            )
+        let fd = {
+            let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
+
+            // Safe because this doesn't modify any memory and we check the return value. We don't
+            // really check `flags` because if the kernel can't handle poorly specified flags then we
+            // have much bigger problems.
+            unsafe {
+                libc::openat(
+                    data.file.as_raw_fd(),
+                    name.as_ptr(),
+                    flags as i32 | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    mode & !(umask & 0o777),
+                )
+            }
         };
         if fd < 0 {
             return Err(io::Error::last_os_error());
@@ -991,23 +997,26 @@ impl FileSystem for PassthroughFs {
         kill_priv: bool,
         _flags: u32,
     ) -> io::Result<usize> {
-        let _killpriv_guard = if kill_priv {
-            // We need to change credentials during a write so that the kernel will remove setuid
-            // or setgid bits from the file if it was written to by someone other than the owner.
-            Some(set_creds(ctx.uid, ctx.gid)?)
-        } else {
-            None
-        };
-
         let data = self.find_handle(handle, inode)?;
 
         // This is safe because read_to uses pwritev64, so the underlying file descriptor
         // offset is not affected by this operation.
         let mut f = data.file.read().unwrap().try_clone().unwrap();
 
-        self.drop_security_capability(f.as_raw_fd())?;
+        {
+            let _killpriv_guard = if kill_priv {
+                // We need to change credentials during a write so that the kernel will remove
+                // setuid or setgid bits from the file if it was written to by someone other than
+                // the owner.
+                Some(set_creds(ctx.uid, ctx.gid)?)
+            } else {
+                None
+            };
 
-        r.read_to(&mut f, size as usize, offset)
+            self.drop_security_capability(f.as_raw_fd())?;
+
+            r.read_to(&mut f, size as usize, offset)
+        }
     }
 
     fn getattr(
@@ -1213,7 +1222,6 @@ impl FileSystem for PassthroughFs {
         rdev: u32,
         umask: u32,
     ) -> io::Result<Entry> {
-        let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
         let data = self
             .inodes
             .read()
@@ -1222,14 +1230,18 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe {
-            libc::mknodat(
-                data.file.as_raw_fd(),
-                name.as_ptr(),
-                (mode & !umask) as libc::mode_t,
-                u64::from(rdev),
-            )
+        let res = {
+            let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
+
+            // Safe because this doesn't modify any memory and we check the return value.
+            unsafe {
+                libc::mknodat(
+                    data.file.as_raw_fd(),
+                    name.as_ptr(),
+                    (mode & !umask) as libc::mode_t,
+                    u64::from(rdev),
+                )
+            }
         };
 
         if res < 0 {
@@ -1288,7 +1300,6 @@ impl FileSystem for PassthroughFs {
         parent: Inode,
         name: &CStr,
     ) -> io::Result<Entry> {
-        let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
         let data = self
             .inodes
             .read()
@@ -1297,9 +1308,12 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        // Safe because this doesn't modify any memory and we check the return value.
-        let res =
-            unsafe { libc::symlinkat(linkname.as_ptr(), data.file.as_raw_fd(), name.as_ptr()) };
+        let res = {
+            let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
+
+            // Safe because this doesn't modify any memory and we check the return value.
+            unsafe { libc::symlinkat(linkname.as_ptr(), data.file.as_raw_fd(), name.as_ptr()) }
+        };
         if res == 0 {
             self.do_lookup(parent, name)
         } else {
