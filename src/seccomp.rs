@@ -87,10 +87,12 @@ fn vuf_filter(action: SeccompAction) -> Result<SeccompFilter, Error> {
             allow_syscall(libc::SYS_mprotect),
             allow_syscall(libc::SYS_mremap),
             allow_syscall(libc::SYS_munmap),
+            allow_syscall(libc::SYS_name_to_handle_at),
             allow_syscall(libc::SYS_newfstatat),
             #[cfg(target_arch = "x86_64")]
             allow_syscall(libc::SYS_open),
             allow_syscall(libc::SYS_openat),
+            allow_syscall(libc::SYS_open_by_handle_at),
             allow_syscall(libc::SYS_prctl), // TODO restrict to just PR_SET_NAME?
             allow_syscall(libc::SYS_preadv),
             allow_syscall(libc::SYS_pread64),

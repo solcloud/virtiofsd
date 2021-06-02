@@ -343,6 +343,10 @@ struct Opt {
     /// Don't tell the guest which directories are mount points
     #[structopt(long)]
     no_announce_submounts: bool,
+
+    /// Use file handles to reference inodes instead of O_PATH file descriptors
+    #[structopt(long)]
+    inode_file_handles: bool,
 }
 
 fn main() {
@@ -374,6 +378,7 @@ fn main() {
             xattrmap,
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
             announce_submounts,
+            inode_file_handles: opt.inode_file_handles,
             ..Default::default()
         },
     };
@@ -382,6 +387,33 @@ fn main() {
     if seccomp_mode != SeccompAction::Allow {
         enable_seccomp(seccomp_mode).unwrap();
     };
+
+    if opt.inode_file_handles {
+        use caps::{CapSet, Capability};
+
+        // --inode-file-handles requires CAP_DAC_READ_SEARCH.  Check it here to save the user some
+        // head-scratching due to getting nothing but EPERMs after mounting.
+        match caps::has_cap(None, CapSet::Effective, Capability::CAP_DAC_READ_SEARCH) {
+            // Perfect, we have CAP_DAC_READ_SEARCH
+            Ok(true) => (),
+
+            // We do not have CAP_DAC_READ_SEARCH, error out
+            Ok(false) => {
+                eprintln!(
+                    "error: --inode-file-handles requires the cap_dac_read_search capability, \
+                            which virtiofsd-rs does not have"
+                );
+                process::exit(1);
+            }
+
+            // We do not know, so print a warning but do not exit
+            Err(e) => eprintln!(
+                "warning: --inode-file-handles requires the cap_dac_read_search capability, \
+                        but inquiring virtiofsd-rs's set of capabilities failed: {}",
+                e
+            ),
+        }
+    }
 
     let fs = PassthroughFs::new(fs_cfg).unwrap();
     let fs_backend = Arc::new(RwLock::new(

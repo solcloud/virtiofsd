@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 use std::ffi::CStr;
-use std::fs::File;
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::io::AsRawFd;
@@ -15,18 +14,18 @@ pub struct StatExt {
     pub mnt_id: u64,
 }
 
-pub fn stat64(f: &File) -> io::Result<StatExt> {
+pub fn stat64(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
     let mut st = MaybeUninit::<libc::stat64>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
-    let pathname = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
+    let path = path.unwrap_or_else(|| unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) });
 
     // Safe because the kernel will only write data in `st` and we check the return
     // value.
     let res = unsafe {
         libc::fstatat64(
-            f.as_raw_fd(),
-            pathname.as_ptr(),
+            dir.as_raw_fd(),
+            path.as_ptr(),
             st.as_mut_ptr(),
             libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
         )
@@ -126,18 +125,18 @@ unsafe fn do_statx(
 
 // Real statx() that depends on do_statx()
 #[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
-pub fn statx(f: &File) -> io::Result<StatExt> {
+pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
     let mut stx_ui = MaybeUninit::<libc::statx>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
-    let pathname = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
+    let path = path.unwrap_or_else(|| unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) });
 
     // Safe because the kernel will only write data in `stx_ui` and we
     // check the return value.
     let res = unsafe {
         do_statx(
-            f.as_raw_fd(),
-            pathname.as_ptr(),
+            dir.as_raw_fd(),
+            path.as_ptr(),
             libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
             libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
             stx_ui.as_mut_ptr(),
@@ -161,6 +160,6 @@ pub fn statx(f: &File) -> io::Result<StatExt> {
 
 // Fallback for when do_statx() is not available
 #[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
-pub fn statx(_f: &File) -> io::Result<StatExt> {
+pub fn statx(_dir: &impl AsRawFd, _path: Option<&CStr>) -> io::Result<StatExt> {
     Err(io::Error::from_raw_os_error(libc::ENOSYS))
 }
