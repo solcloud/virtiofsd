@@ -93,14 +93,14 @@ impl FileHandle {
      * Create a file handle for the given file, and ensure that `mount_fds` contains a valid fd for
      * the mount the file is on (so that `handle.open_with_mount_fds()` will work).
      *
-     * If `path` is empty, `reopen_dir` may be invoked to duplicate `dir` with custom
-     * `libc::open()` flags.
+     * If a new fd needs to be entered into `mount_fds`, `reopen_fd` will be invoked to duplicate
+     * an `O_PATH` fd with custom `libc::open()` flags.
      */
     pub fn from_name_at_with_mount_fds<F>(
         dir: &impl AsRawFd,
         path: &CStr,
         mount_fds: &MountFds,
-        reopen_dir: F,
+        reopen_fd: F,
     ) -> io::Result<Self>
     where
         F: FnOnce(RawFd, libc::c_int) -> io::Result<File>,
@@ -108,33 +108,37 @@ impl FileHandle {
         let handle = Self::from_name_at(dir, path)?;
 
         if !mount_fds.map.read().unwrap().contains_key(&handle.mnt_id) {
-            let file = if path.to_bytes().is_empty() {
-                // `open_by_handle_at()` needs a non-`O_PATH` fd, and `dir` may be `O_PATH`, so we
-                // have to open a new fd here
-                reopen_dir(
-                    dir.as_raw_fd(),
-                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )?
+            // `open_by_handle_at()` needs a non-`O_PATH` fd, which we will need to open here.
+            // We do not know whether `dir`/`path` is a special file, though, and we must not open
+            // special files with anything but `O_PATH`, so we have to get some `O_PATH` fd first
+            // that we can stat to find out whether it is safe to open.
+            // (When opening a new fd here, keep a `File` object around so the fd is closed when it
+            // goes out of scope.)
+            let (path_fd, _path_file) = if path.to_bytes().is_empty() {
+                (dir.as_raw_fd(), None)
             } else {
-                // `openat(dir, path)` should give us a file on the mount
-                let ret = unsafe {
-                    libc::openat(
-                        dir.as_raw_fd(),
-                        path.as_ptr(),
-                        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    )
-                };
+                let ret = unsafe { libc::openat(dir.as_raw_fd(), path.as_ptr(), libc::O_PATH) };
                 if ret < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 // `openat()` guarantees `ret` is a valid fd
-                unsafe { File::from_raw_fd(ret) }
+                (ret, Some(unsafe { File::from_raw_fd(ret) }))
             };
 
-            // Ensure that `file` refers to an inode with the mount ID we need
-            if statx(&file, None)?.mnt_id != handle.mnt_id {
+            // Ensure that `path_fd` refers to an inode with the mount ID we need
+            let stx = statx(&path_fd, None)?;
+            if stx.mnt_id != handle.mnt_id {
                 return Err(io::Error::from_raw_os_error(libc::EIO));
             }
+
+            // Ensure that we can safely reopen `path_fd` with `O_RDONLY`
+            let file_type = stx.st.st_mode & libc::S_IFMT;
+            if file_type != libc::S_IFREG && file_type != libc::S_IFDIR {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+
+            // Now that we know that this is a regular file or directory, really open it
+            let file = reopen_fd(path_fd, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC)?;
 
             mount_fds.map.write().unwrap().insert(handle.mnt_id, file);
         }
