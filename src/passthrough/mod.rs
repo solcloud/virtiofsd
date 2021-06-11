@@ -584,7 +584,7 @@ impl PassthroughFs {
             FileOrHandle::Handle(_) => self.stat(&p_file, Some(name))?,
         };
 
-        if st.st.st_mode & libc::S_IFDIR != 0
+        if st.st.st_mode & libc::S_IFMT == libc::S_IFDIR
             && self.announce_submounts.load(Ordering::Relaxed)
             && (st.st.st_dev != p.dev || st.mnt_id != p.mnt_id)
         {
