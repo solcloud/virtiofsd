@@ -324,13 +324,13 @@ struct Opt {
     #[structopt(long, default_value = "64")]
     thread_pool_size: usize,
 
-    /// Disable support for extended attributes
+    /// Enable support for extended attributes
     #[structopt(long)]
-    disable_xattr: bool,
+    xattr: bool,
 
     /// Add custom rules for translating extended attributes between host and guest
     /// (e.g. :map::user.virtiofs.:)
-    #[structopt(long, conflicts_with = "disable-xattr", parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
+    #[structopt(long, parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
     xattrmap: Option<XattrMap>,
 
     /// Sandbox mechanism to isolate the daemon process (namespace, chroot, none)
@@ -362,10 +362,10 @@ fn main() {
         println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
         opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
     });
-    let xattr = !opt.disable_xattr;
     let announce_submounts = !opt.no_announce_submounts;
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
+    let xattr = if xattrmap.is_some() { true } else { opt.xattr };
     let seccomp_mode = opt.seccomp.clone();
     let thread_pool_size = opt.thread_pool_size;
 
