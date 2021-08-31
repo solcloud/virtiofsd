@@ -25,7 +25,7 @@ use virtio_bindings::bindings::virtio_ring::{
 use virtiofsd_rs::descriptor_utils::Error as VufDescriptorError;
 use virtiofsd_rs::descriptor_utils::{Reader, Writer};
 use virtiofsd_rs::filesystem::FileSystem;
-use virtiofsd_rs::passthrough::{self, PassthroughFs};
+use virtiofsd_rs::passthrough::{self, CachePolicy, PassthroughFs};
 use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
 use virtiofsd_rs::seccomp::enable_seccomp;
 use virtiofsd_rs::server::Server;
@@ -347,6 +347,10 @@ struct Opt {
     /// Use file handles to reference inodes instead of O_PATH file descriptors
     #[structopt(long)]
     inode_file_handles: bool,
+
+    /// The caching policy the file system should use (auto, always, never)
+    #[structopt(long, default_value = "auto")]
+    cache: CachePolicy,
 }
 
 fn main() {
@@ -373,6 +377,7 @@ fn main() {
             return;
         }
         None => passthrough::Config {
+            cache_policy: opt.cache,
             root_dir: sandbox.get_root_dir(),
             xattr,
             xattrmap,
