@@ -42,7 +42,7 @@ impl FsCacheReqHandler for SlaveFsCacheReq {
             VhostUserFSSlaveMsgFlags::MAP_R
         };
 
-        self.fs_slave_map(&msg, fd)?;
+        self.fs_slave_map(&msg, &fd)?;
         Ok(())
     }
 
