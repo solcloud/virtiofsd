@@ -309,15 +309,15 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
 #[structopt(name = "virtiofsd backend", about = "Launch a virtiofsd backend.")]
 struct Opt {
     /// Shared directory path
-    #[structopt(long)]
-    shared_dir: String,
+    #[structopt(long, required_unless = "print-capabilities")]
+    shared_dir: Option<String>,
 
     /// vhost-user socket path [deprecated]
     #[structopt(long)]
     sock: Option<String>,
 
     /// vhost-user socket path
-    #[structopt(long, required_unless = "sock")]
+    #[structopt(long, required_unless_one = &["sock", "print-capabilities"])]
     socket: Option<String>,
 
     /// Maximum thread pool size
@@ -364,12 +364,29 @@ struct Opt {
     /// Honor the O_DIRECT flag passed down by guest applications
     #[structopt(long)]
     allow_direct_io: bool,
+
+    /// Print vhost-user.json backend program capabilities and exit
+    #[structopt(long = "print-capabilities")]
+    print_capabilities: bool,
+}
+
+fn print_capabilities() {
+    println!("{{");
+    println!("  \"type\": \"fs\"");
+    println!("}}");
 }
 
 fn main() {
     let opt = Opt::from_args();
 
-    let shared_dir = opt.shared_dir.as_str();
+    if opt.print_capabilities {
+        print_capabilities();
+        return;
+    }
+
+    // It's safe to unwrap here because clap ensures 'shared_dir' is present unless
+    // 'print_capabilities' is passed.
+    let shared_dir = opt.shared_dir.as_ref().unwrap();
     let socket = opt.socket.as_ref().unwrap_or_else(|| {
         println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
         opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
