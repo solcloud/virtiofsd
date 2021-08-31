@@ -352,6 +352,10 @@ struct Opt {
     /// The caching policy the file system should use (auto, always, never)
     #[structopt(long, default_value = "auto")]
     cache: CachePolicy,
+
+    /// Disable support for READDIRPLUS operations
+    #[structopt(long)]
+    no_readdirplus: bool,
 }
 
 fn main() {
@@ -367,6 +371,10 @@ fn main() {
     let xattr = if xattrmap.is_some() { true } else { opt.xattr };
     let seccomp_mode = opt.seccomp.clone();
     let thread_pool_size = opt.thread_pool_size;
+    let readdirplus = match opt.cache {
+        CachePolicy::Never => false,
+        _ => !opt.no_readdirplus,
+    };
 
     let listener = Listener::new(socket, true).unwrap();
 
@@ -384,6 +392,7 @@ fn main() {
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
             announce_submounts: opt.announce_submounts,
             inode_file_handles: opt.inode_file_handles,
+            readdirplus,
             ..Default::default()
         },
     };

@@ -369,6 +369,11 @@ pub struct Config {
     ///
     /// The default is `false`.
     pub inode_file_handles: bool,
+
+    /// Whether the file system should support READDIRPLUS (READDIR+LOOKUP) operations.
+    ///
+    /// The default is `false`.
+    pub readdirplus: bool,
 }
 
 impl Default for Config {
@@ -385,6 +390,7 @@ impl Default for Config {
             proc_sfd_rawfd: None,
             announce_submounts: false,
             inode_file_handles: false,
+            readdirplus: true,
         }
     }
 }
@@ -933,7 +939,11 @@ impl FileSystem for PassthroughFs {
             inodes.insert_alt(altkey, fuse::ROOT_ID);
         }
 
-        let mut opts = FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO;
+        let mut opts = if self.cfg.readdirplus {
+            FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO
+        } else {
+            FsOptions::empty()
+        };
         if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {
             opts |= FsOptions::WRITEBACK_CACHE;
             self.writeback.store(true, Ordering::Relaxed);
