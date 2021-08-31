@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use std::{ffi::CString, fmt, fs, io, os::unix::io::RawFd};
-use strum_macros::EnumString;
+use std::{ffi::CString, fmt, fs, io, os::unix::io::RawFd, str::FromStr};
 
 use tempdir::TempDir;
 
@@ -68,8 +67,7 @@ impl fmt::Display for Error {
 }
 
 /// Mechanism to be used for setting up the sandbox.
-#[derive(Clone, Debug, EnumString, PartialEq)]
-#[strum(serialize_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SandboxMode {
     /// Create the sandbox using Linux namespaces.
     Namespace,
@@ -77,6 +75,18 @@ pub enum SandboxMode {
     Chroot,
     /// Don't attempt to isolate the process inside a sandbox.
     None,
+}
+
+impl FromStr for SandboxMode {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "namespace" => Ok(SandboxMode::Namespace),
+            "chroot" => Ok(SandboxMode::Chroot),
+            "none" => Ok(SandboxMode::None),
+            _ => Err("Unknown sandbox mode"),
+        }
+    }
 }
 
 /// A helper for creating a sandbox for isolating the service.
