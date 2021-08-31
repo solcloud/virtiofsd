@@ -341,9 +341,9 @@ struct Opt {
     #[structopt(long, parse(try_from_str = parse_seccomp), default_value = "kill")]
     seccomp: SeccompAction,
 
-    /// Don't tell the guest which directories are mount points
+    /// Tell the guest which directories are mount points
     #[structopt(long)]
-    no_announce_submounts: bool,
+    announce_submounts: bool,
 
     /// Use file handles to reference inodes instead of O_PATH file descriptors
     #[structopt(long)]
@@ -362,7 +362,6 @@ fn main() {
         println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
         opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
     });
-    let announce_submounts = !opt.no_announce_submounts;
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
     let xattr = if xattrmap.is_some() { true } else { opt.xattr };
@@ -383,7 +382,7 @@ fn main() {
             xattr,
             xattrmap,
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
-            announce_submounts,
+            announce_submounts: opt.announce_submounts,
             inode_file_handles: opt.inode_file_handles,
             ..Default::default()
         },

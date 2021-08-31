@@ -355,7 +355,7 @@ pub struct Config {
     /// submount structure.  The user needs to decide which drawback weighs heavier for them, which
     /// is why this is a configurable option.
     ///
-    /// The default is `true`.
+    /// The default is `false`.
     pub announce_submounts: bool,
 
     /// Whether to use file handles to reference inodes.  We need to be able to open file
@@ -383,7 +383,7 @@ impl Default for Config {
             xattrmap: None,
             xattr_security_capability: None,
             proc_sfd_rawfd: None,
-            announce_submounts: true,
+            announce_submounts: false,
             inode_file_handles: false,
         }
     }
