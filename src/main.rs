@@ -329,6 +329,7 @@ struct Opt {
     disable_xattr: bool,
 
     /// Add custom rules for translating extended attributes between host and guest
+    /// (e.g. :map::user.virtiofs.:)
     #[structopt(long, conflicts_with = "disable-xattr", parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
     xattrmap: Option<XattrMap>,
 
