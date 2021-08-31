@@ -356,6 +356,10 @@ struct Opt {
     /// Disable support for READDIRPLUS operations
     #[structopt(long)]
     no_readdirplus: bool,
+
+    /// Enable writeback cache
+    #[structopt(long)]
+    writeback: bool,
 }
 
 fn main() {
@@ -393,6 +397,7 @@ fn main() {
             announce_submounts: opt.announce_submounts,
             inode_file_handles: opt.inode_file_handles,
             readdirplus,
+            writeback: opt.writeback,
             ..Default::default()
         },
     };
