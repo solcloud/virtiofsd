@@ -332,7 +332,7 @@ struct Opt {
     #[structopt(long, conflicts_with = "disable-xattr", parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
     xattrmap: Option<XattrMap>,
 
-    /// Sandbox mechanism to isolate the daemon process
+    /// Sandbox mechanism to isolate the daemon process (namespace, chroot, none)
     #[structopt(long, default_value = "namespace")]
     sandbox: SandboxMode,
 
