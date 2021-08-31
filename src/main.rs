@@ -336,7 +336,7 @@ struct Opt {
     #[structopt(long, default_value = "namespace")]
     sandbox: SandboxMode,
 
-    /// Disable/debug seccomp security
+    /// Action to take when seccomp finds a not allowed syscall (allow, kill, log, trap)
     #[structopt(long, parse(try_from_str = parse_seccomp), default_value = "kill")]
     seccomp: SeccompAction,
 
