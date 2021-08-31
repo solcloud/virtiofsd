@@ -250,8 +250,8 @@ impl Rule {
         }
 
         match scope {
-            Scope::CLIENT => xattr_name.starts_with(&self.key.to_bytes()),
-            Scope::SERVER => xattr_name.starts_with(&self.prepend.to_bytes()),
+            Scope::CLIENT => xattr_name.starts_with(self.key.to_bytes()),
+            Scope::SERVER => xattr_name.starts_with(self.prepend.to_bytes()),
             _ => panic!("ambiguous scope"),
         }
     }
