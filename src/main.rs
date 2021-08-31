@@ -360,6 +360,10 @@ struct Opt {
     /// Enable writeback cache
     #[structopt(long)]
     writeback: bool,
+
+    /// Honor the O_DIRECT flag passed down by guest applications
+    #[structopt(long)]
+    allow_direct_io: bool,
 }
 
 fn main() {
@@ -398,6 +402,7 @@ fn main() {
             inode_file_handles: opt.inode_file_handles,
             readdirplus,
             writeback: opt.writeback,
+            allow_direct_io: opt.allow_direct_io,
             ..Default::default()
         },
     };

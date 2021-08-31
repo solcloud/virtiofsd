@@ -374,6 +374,12 @@ pub struct Config {
     ///
     /// The default is `false`.
     pub readdirplus: bool,
+
+    /// Whether the file system should honor the O_DIRECT flag. If this option is disabled (which
+    /// is the default value), that flag will be filtered out at `open_inode`.
+    ///
+    /// The default is `false`.
+    pub allow_direct_io: bool,
 }
 
 impl Default for Config {
@@ -391,6 +397,7 @@ impl Default for Config {
             announce_submounts: false,
             inode_file_handles: false,
             readdirplus: true,
+            allow_direct_io: false,
         }
     }
 }
@@ -564,6 +571,10 @@ impl PassthroughFs {
         // `O_APPEND` flag.
         if writeback && flags & libc::O_APPEND != 0 {
             flags &= !libc::O_APPEND;
+        }
+
+        if !self.cfg.allow_direct_io && flags & libc::O_DIRECT != 0 {
+            flags &= !libc::O_DIRECT;
         }
 
         data.open_file(flags | libc::O_CLOEXEC, &self.proc_self_fd, &self.mount_fds)?
