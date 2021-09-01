@@ -9,7 +9,8 @@ use passthrough::xattrmap::XattrMap;
 use seccomp::SeccompAction;
 use std::{
     convert::{self, TryFrom},
-    error, fmt, io, process,
+    env, error, fmt, io, process,
+    str::FromStr,
     sync::{Arc, Mutex, RwLock},
 };
 
@@ -80,6 +81,35 @@ impl error::Error for Error {}
 impl convert::From<Error> for io::Error {
     fn from(e: Error) -> Self {
         io::Error::new(io::ErrorKind::Other, e)
+    }
+}
+
+#[derive(Debug)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for LogLevel {
+    type Err = &'static str;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "error" => Ok(LogLevel::Error),
+            "warn" => Ok(LogLevel::Warn),
+            "info" => Ok(LogLevel::Info),
+            "debug" => Ok(LogLevel::Debug),
+            "trace" => Ok(LogLevel::Trace),
+            _ => Err("Unknown log level"),
+        }
     }
 }
 
@@ -368,12 +398,24 @@ struct Opt {
     /// Print vhost-user.json backend program capabilities and exit
     #[structopt(long = "print-capabilities")]
     print_capabilities: bool,
+
+    /// Log level (error, warn, info, debug, trace)
+    #[structopt(long = "log-level", default_value = "error")]
+    log_level: LogLevel,
 }
 
 fn print_capabilities() {
     println!("{{");
     println!("  \"type\": \"fs\"");
     println!("}}");
+}
+
+fn initialize_logging(log_level: &LogLevel) {
+    match env::var("RUST_LOG") {
+        Ok(_) => {}
+        Err(_) => env::set_var("RUST_LOG", log_level.to_string()),
+    }
+    env_logger::init();
 }
 
 fn main() {
@@ -383,6 +425,8 @@ fn main() {
         print_capabilities();
         return;
     }
+
+    initialize_logging(&opt.log_level);
 
     // It's safe to unwrap here because clap ensures 'shared_dir' is present unless
     // 'print_capabilities' is passed.
