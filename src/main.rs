@@ -9,7 +9,8 @@ use passthrough::xattrmap::XattrMap;
 use seccomp::SeccompAction;
 use std::{
     convert::{self, TryFrom},
-    error, fmt, io, process,
+    env, error, fmt, io, process,
+    str::FromStr,
     sync::{Arc, Mutex, RwLock},
 };
 
@@ -25,7 +26,7 @@ use virtio_bindings::bindings::virtio_ring::{
 use virtiofsd_rs::descriptor_utils::Error as VufDescriptorError;
 use virtiofsd_rs::descriptor_utils::{Reader, Writer};
 use virtiofsd_rs::filesystem::FileSystem;
-use virtiofsd_rs::passthrough::{self, PassthroughFs};
+use virtiofsd_rs::passthrough::{self, CachePolicy, PassthroughFs};
 use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
 use virtiofsd_rs::seccomp::enable_seccomp;
 use virtiofsd_rs::server::Server;
@@ -80,6 +81,35 @@ impl error::Error for Error {}
 impl convert::From<Error> for io::Error {
     fn from(e: Error) -> Self {
         io::Error::new(io::ErrorKind::Other, e)
+    }
+}
+
+#[derive(Debug)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for LogLevel {
+    type Err = &'static str;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "error" => Ok(LogLevel::Error),
+            "warn" => Ok(LogLevel::Warn),
+            "info" => Ok(LogLevel::Info),
+            "debug" => Ok(LogLevel::Debug),
+            "trace" => Ok(LogLevel::Trace),
+            _ => Err("Unknown log level"),
+        }
     }
 }
 
@@ -309,60 +339,111 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
 #[structopt(name = "virtiofsd backend", about = "Launch a virtiofsd backend.")]
 struct Opt {
     /// Shared directory path
-    #[structopt(long)]
-    shared_dir: String,
+    #[structopt(long, required_unless = "print-capabilities")]
+    shared_dir: Option<String>,
 
     /// vhost-user socket path [deprecated]
     #[structopt(long)]
     sock: Option<String>,
 
     /// vhost-user socket path
-    #[structopt(long, required_unless = "sock")]
+    #[structopt(long, required_unless_one = &["sock", "print-capabilities"])]
     socket: Option<String>,
 
     /// Maximum thread pool size
     #[structopt(long, default_value = "64")]
     thread_pool_size: usize,
 
-    /// Disable support for extended attributes
+    /// Enable support for extended attributes
     #[structopt(long)]
-    disable_xattr: bool,
+    xattr: bool,
 
     /// Add custom rules for translating extended attributes between host and guest
-    #[structopt(long, conflicts_with = "disable-xattr", parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
+    /// (e.g. :map::user.virtiofs.:)
+    #[structopt(long, parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
     xattrmap: Option<XattrMap>,
 
-    /// Sandbox mechanism to isolate the daemon process
+    /// Sandbox mechanism to isolate the daemon process (namespace, chroot, none)
     #[structopt(long, default_value = "namespace")]
     sandbox: SandboxMode,
 
-    /// Disable/debug seccomp security
+    /// Action to take when seccomp finds a not allowed syscall (allow, kill, log, trap)
     #[structopt(long, parse(try_from_str = parse_seccomp), default_value = "kill")]
     seccomp: SeccompAction,
 
-    /// Don't tell the guest which directories are mount points
+    /// Tell the guest which directories are mount points
     #[structopt(long)]
-    no_announce_submounts: bool,
+    announce_submounts: bool,
 
     /// Use file handles to reference inodes instead of O_PATH file descriptors
     #[structopt(long)]
     inode_file_handles: bool,
+
+    /// The caching policy the file system should use (auto, always, never)
+    #[structopt(long, default_value = "auto")]
+    cache: CachePolicy,
+
+    /// Disable support for READDIRPLUS operations
+    #[structopt(long)]
+    no_readdirplus: bool,
+
+    /// Enable writeback cache
+    #[structopt(long)]
+    writeback: bool,
+
+    /// Honor the O_DIRECT flag passed down by guest applications
+    #[structopt(long)]
+    allow_direct_io: bool,
+
+    /// Print vhost-user.json backend program capabilities and exit
+    #[structopt(long = "print-capabilities")]
+    print_capabilities: bool,
+
+    /// Log level (error, warn, info, debug, trace)
+    #[structopt(long = "log-level", default_value = "error")]
+    log_level: LogLevel,
+}
+
+fn print_capabilities() {
+    println!("{{");
+    println!("  \"type\": \"fs\"");
+    println!("}}");
+}
+
+fn initialize_logging(log_level: &LogLevel) {
+    match env::var("RUST_LOG") {
+        Ok(_) => {}
+        Err(_) => env::set_var("RUST_LOG", log_level.to_string()),
+    }
+    env_logger::init();
 }
 
 fn main() {
     let opt = Opt::from_args();
 
-    let shared_dir = opt.shared_dir.as_str();
+    if opt.print_capabilities {
+        print_capabilities();
+        return;
+    }
+
+    initialize_logging(&opt.log_level);
+
+    // It's safe to unwrap here because clap ensures 'shared_dir' is present unless
+    // 'print_capabilities' is passed.
+    let shared_dir = opt.shared_dir.as_ref().unwrap();
     let socket = opt.socket.as_ref().unwrap_or_else(|| {
         println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
         opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
     });
-    let xattr = !opt.disable_xattr;
-    let announce_submounts = !opt.no_announce_submounts;
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
+    let xattr = if xattrmap.is_some() { true } else { opt.xattr };
     let seccomp_mode = opt.seccomp.clone();
     let thread_pool_size = opt.thread_pool_size;
+    let readdirplus = match opt.cache {
+        CachePolicy::Never => false,
+        _ => !opt.no_readdirplus,
+    };
 
     let listener = Listener::new(socket, true).unwrap();
 
@@ -373,12 +454,16 @@ fn main() {
             return;
         }
         None => passthrough::Config {
+            cache_policy: opt.cache,
             root_dir: sandbox.get_root_dir(),
             xattr,
             xattrmap,
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
-            announce_submounts,
+            announce_submounts: opt.announce_submounts,
             inode_file_handles: opt.inode_file_handles,
+            readdirplus,
+            writeback: opt.writeback,
+            allow_direct_io: opt.allow_direct_io,
             ..Default::default()
         },
     };

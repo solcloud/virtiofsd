@@ -355,7 +355,7 @@ pub struct Config {
     /// submount structure.  The user needs to decide which drawback weighs heavier for them, which
     /// is why this is a configurable option.
     ///
-    /// The default is `true`.
+    /// The default is `false`.
     pub announce_submounts: bool,
 
     /// Whether to use file handles to reference inodes.  We need to be able to open file
@@ -369,6 +369,17 @@ pub struct Config {
     ///
     /// The default is `false`.
     pub inode_file_handles: bool,
+
+    /// Whether the file system should support READDIRPLUS (READDIR+LOOKUP) operations.
+    ///
+    /// The default is `false`.
+    pub readdirplus: bool,
+
+    /// Whether the file system should honor the O_DIRECT flag. If this option is disabled (which
+    /// is the default value), that flag will be filtered out at `open_inode`.
+    ///
+    /// The default is `false`.
+    pub allow_direct_io: bool,
 }
 
 impl Default for Config {
@@ -383,8 +394,10 @@ impl Default for Config {
             xattrmap: None,
             xattr_security_capability: None,
             proc_sfd_rawfd: None,
-            announce_submounts: true,
+            announce_submounts: false,
             inode_file_handles: false,
+            readdirplus: true,
+            allow_direct_io: false,
         }
     }
 }
@@ -558,6 +571,10 @@ impl PassthroughFs {
         // `O_APPEND` flag.
         if writeback && flags & libc::O_APPEND != 0 {
             flags &= !libc::O_APPEND;
+        }
+
+        if !self.cfg.allow_direct_io && flags & libc::O_DIRECT != 0 {
+            flags &= !libc::O_DIRECT;
         }
 
         data.open_file(flags | libc::O_CLOEXEC, &self.proc_self_fd, &self.mount_fds)?
@@ -933,7 +950,11 @@ impl FileSystem for PassthroughFs {
             inodes.insert_alt(altkey, fuse::ROOT_ID);
         }
 
-        let mut opts = FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO;
+        let mut opts = if self.cfg.readdirplus {
+            FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO
+        } else {
+            FsOptions::empty()
+        };
         if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {
             opts |= FsOptions::WRITEBACK_CACHE;
             self.writeback.store(true, Ordering::Relaxed);
