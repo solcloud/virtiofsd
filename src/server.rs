@@ -507,7 +507,8 @@ impl<F: FileSystem + Sync> Server<F> {
     fn rename2(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
         let Rename2In { newdir, flags, .. } = r.read_obj().map_err(Error::DecodeMessage)?;
 
-        let flags = flags & (libc::RENAME_EXCHANGE | libc::RENAME_NOREPLACE) as u32;
+        let flags =
+            flags & (libc::RENAME_EXCHANGE | libc::RENAME_NOREPLACE | libc::RENAME_WHITEOUT) as u32;
 
         self.do_rename(in_header, size_of::<Rename2In>(), newdir, flags, r, w)
     }
