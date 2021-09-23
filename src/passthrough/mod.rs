@@ -116,6 +116,13 @@ fn reopen_fd_through_proc(
     }
 }
 
+/// Returns true if it's safe to open this inode without O_PATH.
+fn is_safe_inode(mode: u32) -> bool {
+    // Only regular files and directories are considered safe to be opened from the file
+    // server without O_PATH.
+    matches!(mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR)
+}
+
 impl<'a> InodeData {
     /// Get an `O_PATH` file for this inode
     fn get_file(&'a self, mount_fds: &MountFds) -> io::Result<InodeFile<'a>> {
@@ -136,6 +143,10 @@ impl<'a> InodeData {
         proc_self_fd: &File,
         mount_fds: &MountFds,
     ) -> io::Result<InodeFile<'static>> {
+        if !is_safe_inode(self.mode) {
+            return Err(ebadf());
+        }
+
         match &self.file_or_handle {
             FileOrHandle::File(f) => {
                 let new_file = reopen_fd_through_proc(f, flags, proc_self_fd)?;
@@ -820,12 +831,6 @@ impl PassthroughFs {
             }
         }
     }
-
-    fn is_safe_inode(&self, mode: u32) -> bool {
-        // Only regular files and directories are considered safe to be opened from the file
-        // server without O_PATH.
-        matches!(mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR)
-    }
 }
 
 fn forget_one(
@@ -1138,31 +1143,56 @@ impl FileSystem for PassthroughFs {
             // Safe because this doesn't modify any memory and we check the return value. We don't
             // really check `flags` because if the kernel can't handle poorly specified flags then we
             // have much bigger problems.
+            //
+            // Add libc:O_EXCL to ensure we're not accidentally opening a file the guest wouldn't
+            // be allowed to access otherwise.
             unsafe {
                 libc::openat(
                     parent_file.as_raw_fd(),
                     name.as_ptr(),
-                    flags as i32 | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    flags as i32
+                        | libc::O_CREAT
+                        | libc::O_CLOEXEC
+                        | libc::O_NOFOLLOW
+                        | libc::O_EXCL,
                     mode & !(umask & 0o777),
                 )
             }
         };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
 
-        // Safe because we just opened this fd.
-        let file = RwLock::new(unsafe { File::from_raw_fd(fd) });
+        let (entry, handle) = if fd < 0 {
+            // Ignore the error if the file exists and O_EXCL is not present in `flags`
+            let last_error = io::Error::last_os_error();
+            match last_error.kind() {
+                io::ErrorKind::AlreadyExists => {
+                    if (flags as i32 & libc::O_EXCL) != 0 {
+                        return Err(last_error);
+                    }
+                }
+                _ => return Err(last_error),
+            }
 
-        let entry = self.do_lookup(parent, name)?;
+            let entry = self.do_lookup(parent, name)?;
+            let (handle, _) = self.do_open(entry.inode, flags)?;
+            let handle = handle.ok_or_else(ebadf)?;
 
-        let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
-        let data = HandleData {
-            inode: entry.inode,
-            file,
+            (entry, handle)
+        } else {
+            // Safe because we just opened this fd.
+            let file = RwLock::new(unsafe { File::from_raw_fd(fd) });
+
+            let entry = self.do_lookup(parent, name)?;
+
+            let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
+            let data = HandleData {
+                inode: entry.inode,
+                file,
+            };
+
+            self.handles.write().unwrap().insert(handle, Arc::new(data));
+
+            (entry, handle)
         };
-
-        self.handles.write().unwrap().insert(handle, Arc::new(data));
 
         let mut opts = OpenOptions::empty();
         match self.cfg.cache_policy {
@@ -1754,7 +1784,7 @@ impl FileSystem for PassthroughFs {
 
         let name = self.map_client_xattrname(name)?;
 
-        let res = if self.is_safe_inode(data.mode) {
+        let res = if is_safe_inode(data.mode) {
             // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
             // need to get a new fd.
             let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NONBLOCK)?;
@@ -1828,7 +1858,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let res = if self.is_safe_inode(data.mode) {
+        let res = if is_safe_inode(data.mode) {
             // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
             // need to get a new fd.
             let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NONBLOCK)?;
@@ -1893,7 +1923,7 @@ impl FileSystem for PassthroughFs {
 
         let mut buf = vec![0; size as usize];
 
-        let res = if self.is_safe_inode(data.mode) {
+        let res = if is_safe_inode(data.mode) {
             // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
             // need to get a new fd.
             let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NONBLOCK)?;
@@ -1960,7 +1990,7 @@ impl FileSystem for PassthroughFs {
 
         let name = self.map_client_xattrname(name)?;
 
-        let res = if self.is_safe_inode(data.mode) {
+        let res = if is_safe_inode(data.mode) {
             // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
             // need to get a new fd.
             let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NONBLOCK)?;
