@@ -11,11 +11,11 @@ use std::ops::Deref;
 use std::ptr::copy_nonoverlapping;
 use std::result;
 
+use virtio_queue::DescriptorChain;
 use vm_memory::{
     Address, ByteValued, GuestMemory, GuestMemoryAtomic, GuestMemoryError, GuestMemoryMmap,
     GuestMemoryRegion, Le16, Le32, Le64, VolatileMemory, VolatileMemoryError, VolatileSlice,
 };
-use vm_virtio::DescriptorChain;
 
 use crate::file_traits::{FileReadWriteAtVolatile, FileReadWriteVolatile};
 
