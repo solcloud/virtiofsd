@@ -339,16 +339,16 @@ struct Opt {
     #[structopt(long, required_unless = "print-capabilities")]
     shared_dir: Option<String>,
 
-    /// vhost-user socket path [deprecated]
-    #[structopt(long)]
-    sock: Option<String>,
-
-    /// vhost-user socket path
-    #[structopt(long, required_unless_one = &["fd", "sock", "print-capabilities"])]
+    /// vhost-user socket path (deprecated)
+    #[structopt(long, required_unless_one = &["fd", "socket-path", "print-capabilities"])]
     socket: Option<String>,
 
+    /// vhost-user socket path
+    #[structopt(long = "socket-path", required_unless_one = &["fd", "socket", "print-capabilities"])]
+    socket_path: Option<String>,
+
     /// File descriptor for the listening socket
-    #[structopt(long, required_unless_one = &["sock", "socket", "print-capabilities"], conflicts_with_all = &["sock", "socket"])]
+    #[structopt(long, required_unless_one = &["socket", "socket-path", "print-capabilities"], conflicts_with_all = &["sock", "socket"])]
     fd: Option<RawFd>,
 
     /// Maximum thread pool size
@@ -445,9 +445,9 @@ fn main() {
     let listener = match opt.fd.as_ref() {
         Some(fd) => unsafe { Listener::from_raw_fd(*fd) },
         None => {
-            let socket = opt.socket.as_ref().unwrap_or_else(|| {
-                println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
-                opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
+            let socket = opt.socket_path.as_ref().unwrap_or_else(|| {
+                println!("warning: use of deprecated parameter '--socket': Please use the '--socket-path' option instead.");
+                opt.socket.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
             });
             Listener::new(socket, true).unwrap()
         }
