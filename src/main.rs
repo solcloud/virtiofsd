@@ -9,7 +9,9 @@ use passthrough::xattrmap::XattrMap;
 use seccomp::SeccompAction;
 use std::{
     convert::{self, TryFrom},
-    env, error, fmt, io, process,
+    env, error, fmt, io,
+    os::unix::io::{FromRawFd, RawFd},
+    process,
     str::FromStr,
     sync::{Arc, Mutex, RwLock},
 };
@@ -342,8 +344,12 @@ struct Opt {
     sock: Option<String>,
 
     /// vhost-user socket path
-    #[structopt(long, required_unless_one = &["sock", "print-capabilities"])]
+    #[structopt(long, required_unless_one = &["fd", "sock", "print-capabilities"])]
     socket: Option<String>,
+
+    /// File descriptor for the listening socket
+    #[structopt(long, required_unless_one = &["sock", "socket", "print-capabilities"], conflicts_with_all = &["sock", "socket"])]
+    fd: Option<RawFd>,
 
     /// Maximum thread pool size
     #[structopt(long, default_value = "64")]
@@ -426,10 +432,6 @@ fn main() {
     // It's safe to unwrap here because clap ensures 'shared_dir' is present unless
     // 'print_capabilities' is passed.
     let shared_dir = opt.shared_dir.as_ref().unwrap();
-    let socket = opt.socket.as_ref().unwrap_or_else(|| {
-        println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
-        opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
-    });
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
     let xattr = if xattrmap.is_some() { true } else { opt.xattr };
@@ -440,7 +442,16 @@ fn main() {
         _ => !opt.no_readdirplus,
     };
 
-    let listener = Listener::new(socket, true).unwrap();
+    let listener = match opt.fd.as_ref() {
+        Some(fd) => unsafe { Listener::from_raw_fd(*fd) },
+        None => {
+            let socket = opt.socket.as_ref().unwrap_or_else(|| {
+                println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
+                opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
+            });
+            Listener::new(socket, true).unwrap()
+        }
+    };
 
     let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode);
     let fs_cfg = match sandbox.enter().unwrap() {
