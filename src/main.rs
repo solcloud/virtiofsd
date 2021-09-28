@@ -18,11 +18,14 @@ use structopt::StructOpt;
 
 use vhost::vhost_user::message::*;
 use vhost::vhost_user::{Listener, SlaveFsCacheReq};
-use vhost_user_backend::{VhostUserBackendMut, VhostUserDaemon, VringMutex, VringT};
+use vhost_user_backend::{
+    VhostUserBackendMut, VhostUserDaemon, VringMutex, VringStateMutGuard, VringT,
+};
 use virtio_bindings::bindings::virtio_net::*;
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
+use virtio_queue::DescriptorChain;
 use virtiofsd_rs::descriptor_utils::Error as VufDescriptorError;
 use virtiofsd_rs::descriptor_utils::{Reader, Writer};
 use virtiofsd_rs::filesystem::FileSystem;
@@ -117,7 +120,7 @@ struct VhostUserFsThread<F: FileSystem + Send + Sync + 'static> {
     // handle request from slave to master
     vu_req: Option<SlaveFsCacheReq>,
     event_idx: bool,
-    pool: ThreadPool,
+    pool: Option<ThreadPool>,
 }
 
 impl<F: FileSystem + Send + Sync + 'static> Clone for VhostUserFsThread<F> {
@@ -135,20 +138,28 @@ impl<F: FileSystem + Send + Sync + 'static> Clone for VhostUserFsThread<F> {
 
 impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
     fn new(fs: F, thread_pool_size: usize) -> Result<Self> {
+        let pool = if thread_pool_size > 0 {
+            Some(
+                ThreadPoolBuilder::new()
+                    .pool_size(thread_pool_size)
+                    .create()
+                    .map_err(Error::CreateThreadPool)?,
+            )
+        } else {
+            None
+        };
+
         Ok(VhostUserFsThread {
             mem: None,
             kill_evt: EventFd::new(EFD_NONBLOCK).map_err(Error::CreateKillEventFd)?,
             server: Arc::new(Server::new(fs)),
             vu_req: None,
             event_idx: false,
-            pool: ThreadPoolBuilder::new()
-                .pool_size(thread_pool_size)
-                .create()
-                .map_err(Error::CreateThreadPool)?,
+            pool,
         })
     }
 
-    fn process_queue(&mut self, vring: VringMutex) -> Result<bool> {
+    fn process_queue_pool(&mut self, vring: VringMutex) -> Result<bool> {
         let mut used_any = false;
         let atomic_mem = match &self.mem {
             Some(m) => m,
@@ -172,7 +183,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
             let worker_vring = vring.clone();
             let worker_desc = avail_desc.clone();
 
-            self.pool.spawn_ok(async move {
+            self.pool.as_ref().unwrap().spawn_ok(async move {
                 let mem = atomic_mem.memory();
                 let head_index = worker_desc.head_index();
 
@@ -214,6 +225,140 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
         }
 
         Ok(used_any)
+    }
+
+    fn process_queue_serial(
+        &mut self,
+        vring_state: &mut VringStateMutGuard<GuestMemoryAtomic<GuestMemoryMmap>>,
+    ) -> Result<bool> {
+        let mut used_any = false;
+        let mem = match &self.mem {
+            Some(m) => m.memory(),
+            None => return Err(Error::NoMemoryConfigured),
+        };
+
+        let avail_chains: Vec<DescriptorChain<GuestMemoryAtomic<GuestMemoryMmap>>> = vring_state
+            .get_queue_mut()
+            .iter()
+            .map_err(|_| Error::IterateQueue)?
+            .collect();
+
+        for chain in avail_chains {
+            used_any = true;
+
+            let head_index = chain.head_index();
+
+            let reader = Reader::new(&mem, chain.clone())
+                .map_err(Error::QueueReader)
+                .unwrap();
+            let writer = Writer::new(&mem, chain.clone())
+                .map_err(Error::QueueWriter)
+                .unwrap();
+
+            self.server
+                .handle_message(reader, writer, self.vu_req.as_mut())
+                .map_err(Error::ProcessQueue)
+                .unwrap();
+
+            if self.event_idx {
+                if vring_state.add_used(head_index, 0).is_err() {
+                    warn!("Couldn't return used descriptors to the ring");
+                }
+
+                match vring_state.needs_notification() {
+                    Err(_) => {
+                        warn!("Couldn't check if queue needs to be notified");
+                        vring_state.signal_used_queue().unwrap();
+                    }
+                    Ok(needs_notification) => {
+                        if needs_notification {
+                            vring_state.signal_used_queue().unwrap();
+                        }
+                    }
+                }
+            } else {
+                if vring_state.add_used(head_index, 0).is_err() {
+                    warn!("Couldn't return used descriptors to the ring");
+                }
+                vring_state.signal_used_queue().unwrap();
+            }
+        }
+
+        Ok(used_any)
+    }
+
+    fn handle_event_pool(
+        &mut self,
+        device_event: u16,
+        vrings: &[VringMutex],
+    ) -> VhostUserBackendResult<bool> {
+        let idx = match device_event {
+            HIPRIO_QUEUE_EVENT => {
+                debug!("HIPRIO_QUEUE_EVENT");
+                0
+            }
+            REQ_QUEUE_EVENT => {
+                debug!("QUEUE_EVENT");
+                1
+            }
+            _ => return Err(Error::HandleEventUnknownEvent.into()),
+        };
+
+        if self.event_idx {
+            // vm-virtio's Queue implementation only checks avail_index
+            // once, so to properly support EVENT_IDX we need to keep
+            // calling process_queue() until it stops finding new
+            // requests on the queue.
+            loop {
+                vrings[idx].disable_notification().unwrap();
+                self.process_queue_pool(vrings[idx].clone())?;
+                if !vrings[idx].enable_notification().unwrap() {
+                    break;
+                }
+            }
+        } else {
+            // Without EVENT_IDX, a single call is enough.
+            self.process_queue_pool(vrings[idx].clone())?;
+        }
+
+        Ok(false)
+    }
+
+    fn handle_event_serial(
+        &mut self,
+        device_event: u16,
+        vrings: &[VringMutex],
+    ) -> VhostUserBackendResult<bool> {
+        let mut vring_state = match device_event {
+            HIPRIO_QUEUE_EVENT => {
+                debug!("HIPRIO_QUEUE_EVENT");
+                vrings[0].get_mut()
+            }
+            REQ_QUEUE_EVENT => {
+                debug!("QUEUE_EVENT");
+                vrings[1].get_mut()
+            }
+            _ => return Err(Error::HandleEventUnknownEvent.into()),
+        };
+
+        if self.event_idx {
+            // vm-virtio's Queue implementation only checks avail_index
+            // once, so to properly support EVENT_IDX we need to keep
+            // calling process_queue() until it stops finding new
+            // requests on the queue.
+            loop {
+                vring_state.disable_notification().unwrap();
+                self.process_queue_serial(&mut vring_state)?;
+                if !vring_state.enable_notification().unwrap() {
+                    break;
+                }
+            }
+        } else {
+            // Without EVENT_IDX, a single call is enough.
+            self.process_queue_serial(&mut vring_state)?;
+        }
+
+        Ok(false)
     }
 }
 
@@ -279,36 +424,11 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackendMut<VringMutex>
 
         let mut thread = self.thread.lock().unwrap();
 
-        let idx = match device_event {
-            HIPRIO_QUEUE_EVENT => {
-                debug!("HIPRIO_QUEUE_EVENT");
-                0
-            }
-            REQ_QUEUE_EVENT => {
-                debug!("QUEUE_EVENT");
-                1
-            }
-            _ => return Err(Error::HandleEventUnknownEvent.into()),
-        };
-
-        if thread.event_idx {
-            // vm-virtio's Queue implementation only checks avail_index
-            // once, so to properly support EVENT_IDX we need to keep
-            // calling process_queue() until it stops finding new
-            // requests on the queue.
-            loop {
-                vrings[idx].disable_notification().unwrap();
-                thread.process_queue(vrings[idx].clone())?;
-                if !vrings[idx].enable_notification().unwrap() {
-                    break;
-                }
-            }
+        if thread.pool.is_some() {
+            thread.handle_event_pool(device_event, vrings)
         } else {
-            // Without EVENT_IDX, a single call is enough.
-            thread.process_queue(vrings[idx].clone())?;
+            thread.handle_event_serial(device_event, vrings)
         }
-
-        Ok(false)
     }
 
     fn exit_event(&self, _thread_index: usize) -> Option<EventFd> {
@@ -345,8 +465,8 @@ struct Opt {
     #[structopt(long, required_unless_one = &["sock", "print-capabilities"])]
     socket: Option<String>,
 
-    /// Maximum thread pool size
-    #[structopt(long, default_value = "64")]
+    /// Maximum thread pool size. A value of "0" disables the pool
+    #[structopt(long, default_value = "0")]
     thread_pool_size: usize,
 
     /// Enable support for extended attributes
