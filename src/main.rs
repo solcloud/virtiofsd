@@ -59,6 +59,12 @@ enum Error {
     HandleEventNotEpollIn,
     /// Failed to handle unknown event.
     HandleEventUnknownEvent,
+    /// Invalid compat argument found on the command line.
+    InvalidCompatArgument,
+    /// Invalid compat value found on the command line.
+    InvalidCompatValue,
+    /// Invalid xattr map compat argument found on the command line.
+    InvalidXattrMap,
     /// Iterating through the queue failed.
     IterateQueue,
     /// No memory configured.
@@ -85,7 +91,7 @@ impl convert::From<Error> for io::Error {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum LogLevel {
     Error,
     Warn,
@@ -334,11 +340,11 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
     })
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Clone, Debug, StructOpt)]
 #[structopt(name = "virtiofsd backend", about = "Launch a virtiofsd backend.")]
 struct Opt {
     /// Shared directory path
-    #[structopt(long, required_unless = "print-capabilities")]
+    #[structopt(long)]
     shared_dir: Option<String>,
 
     /// vhost-user socket path (deprecated)
@@ -413,6 +419,73 @@ struct Opt {
     /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
     #[structopt(long = "rlimit-nofile")]
     rlimit_nofile: Option<u64>,
+
+    /// Options in a format compatible with the legacy implementation
+    #[structopt(short = "o")]
+    compat_options: Option<Vec<String>>,
+}
+
+fn parse_compat(opt: Opt) -> Result<Opt> {
+    fn parse_tuple(opt: &mut Opt, tuple: &str) -> Result<()> {
+        match tuple.split('=').collect::<Vec<&str>>()[..] {
+            ["xattrmap", value] => {
+                opt.xattrmap = Some(XattrMap::try_from(value).map_err(|_| Error::InvalidXattrMap)?)
+            }
+            ["cache", value] => match value {
+                "auto" => opt.cache = CachePolicy::Auto,
+                "always" => opt.cache = CachePolicy::Always,
+                "none" => opt.cache = CachePolicy::Never,
+                _ => return Err(Error::InvalidCompatValue),
+            },
+            ["loglevel", value] => match value {
+                "debug" => opt.log_level = LogLevel::Debug,
+                "info" => opt.log_level = LogLevel::Info,
+                "warn" => opt.log_level = LogLevel::Warn,
+                "err" => opt.log_level = LogLevel::Error,
+                _ => return Err(Error::InvalidCompatValue),
+            },
+            ["sandbox", value] => match value {
+                "namespace" => opt.sandbox = SandboxMode::Namespace,
+                "chroot" => opt.sandbox = SandboxMode::Chroot,
+                _ => return Err(Error::InvalidCompatValue),
+            },
+            ["source", value] => opt.shared_dir = Some(value.to_string()),
+            _ => return Err(Error::InvalidCompatArgument),
+        }
+        Ok(())
+    }
+
+    fn parse_single(opt: &mut Opt, option: &str) -> Result<()> {
+        match option {
+            "xattr" => opt.xattr = true,
+            "no_xattr" => opt.xattr = false,
+            "readdirplus" => opt.no_readdirplus = false,
+            "no_readdirplus" => opt.no_readdirplus = true,
+            "writeback" => opt.writeback = true,
+            "no_writeback" => opt.writeback = false,
+            "allow_direct_io" => opt.allow_direct_io = true,
+            "no_allow_direct_io" => opt.allow_direct_io = false,
+            "announce_submounts" => opt.announce_submounts = true,
+            _ => return Err(Error::InvalidCompatArgument),
+        }
+        Ok(())
+    }
+
+    let mut clean_opt = opt.clone();
+
+    if let Some(compat_options) = opt.compat_options.as_ref() {
+        for line in compat_options {
+            for option in line.to_string().split(',') {
+                if option.contains('=') {
+                    parse_tuple(&mut clean_opt, option)?;
+                } else {
+                    parse_single(&mut clean_opt, option)?;
+                }
+            }
+        }
+    }
+
+    Ok(clean_opt)
 }
 
 fn print_capabilities() {
@@ -430,7 +503,7 @@ fn initialize_logging(log_level: &LogLevel) {
 }
 
 fn main() {
-    let opt = Opt::from_args();
+    let opt = parse_compat(Opt::from_args()).expect("invalid compat argument");
 
     if opt.print_capabilities {
         print_capabilities();
@@ -439,9 +512,13 @@ fn main() {
 
     initialize_logging(&opt.log_level);
 
-    // It's safe to unwrap here because clap ensures 'shared_dir' is present unless
-    // 'print_capabilities' is passed.
-    let shared_dir = opt.shared_dir.as_ref().unwrap();
+    let shared_dir = match opt.shared_dir.as_ref() {
+        Some(s) => s,
+        None => {
+            error!("missing \"--shared-dir\" or \"-o source\" option");
+            process::exit(1);
+        }
+    };
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
     let xattr = if xattrmap.is_some() { true } else { opt.xattr };
