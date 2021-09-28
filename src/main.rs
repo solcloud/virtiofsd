@@ -250,6 +250,8 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackendMut<VringMutex>
         VhostUserProtocolFeatures::MQ
             | VhostUserProtocolFeatures::SLAVE_REQ
             | VhostUserProtocolFeatures::SLAVE_SEND_FD
+            | VhostUserProtocolFeatures::REPLY_ACK
+            | VhostUserProtocolFeatures::CONFIGURE_MEM_SLOTS
     }
 
     fn set_event_idx(&mut self, enabled: bool) {
