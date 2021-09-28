@@ -98,14 +98,17 @@ pub struct Sandbox {
     proc_self_fd: Option<RawFd>,
     /// Mechanism to be used for setting up the sandbox.
     sandbox_mode: SandboxMode,
+    /// Value to set as RLIMIT_NOFILE
+    rlimit_nofile: Option<u64>,
 }
 
 impl Sandbox {
-    pub fn new(shared_dir: String, sandbox_mode: SandboxMode) -> Self {
+    pub fn new(shared_dir: String, sandbox_mode: SandboxMode, rlimit_nofile: Option<u64>) -> Self {
         Sandbox {
             shared_dir,
             proc_self_fd: None,
             sandbox_mode,
+            rlimit_nofile,
         }
     }
 
@@ -285,15 +288,19 @@ impl Sandbox {
 
     /// Sets the limit of open files to the max possible.
     fn setup_nofile_rlimit(&self) -> Result<(), Error> {
-        // /proc/sys/fs/nr_open is a sysctl file that shows the maximum number
-        // of file-handles a process can allocate.
-        let path = "/proc/sys/fs/nr_open";
-        let max_str = fs::read_to_string(path).map_err(Error::ReadProc)?;
-        let max = max_str.trim().parse().map_err(Error::InvalidNrOpen)?;
+        let rlimit_nofile = if let Some(rlimit_nofile) = self.rlimit_nofile {
+            rlimit_nofile
+        } else {
+            // /proc/sys/fs/nr_open is a sysctl file that shows the maximum number
+            // of file-handles a process can allocate.
+            let path = "/proc/sys/fs/nr_open";
+            let max_str = fs::read_to_string(path).map_err(Error::ReadProc)?;
+            max_str.trim().parse().map_err(Error::InvalidNrOpen)?
+        };
 
         let limit = libc::rlimit {
-            rlim_cur: max,
-            rlim_max: max,
+            rlim_cur: rlimit_nofile,
+            rlim_max: rlimit_nofile,
         };
         let ret = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
         if ret < 0 {

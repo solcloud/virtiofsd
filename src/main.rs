@@ -409,6 +409,10 @@ struct Opt {
     /// Log level (error, warn, info, debug, trace)
     #[structopt(long = "log-level", default_value = "error")]
     log_level: LogLevel,
+
+    /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
+    #[structopt(long = "rlimit-nofile")]
+    rlimit_nofile: Option<u64>,
 }
 
 fn print_capabilities() {
@@ -498,7 +502,17 @@ fn main() {
         }
     }
 
-    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode);
+    let rlimit_nofile = if let Some(rlimit_nofile) = opt.rlimit_nofile {
+        if rlimit_nofile != 0 {
+            Some(rlimit_nofile)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile);
     let fs_cfg = match sandbox.enter().unwrap() {
         Some(child_pid) => {
             unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
