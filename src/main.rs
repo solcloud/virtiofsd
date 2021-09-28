@@ -9,7 +9,9 @@ use passthrough::xattrmap::XattrMap;
 use seccomp::SeccompAction;
 use std::{
     convert::{self, TryFrom},
-    env, error, fmt, io,
+    env, error,
+    ffi::CString,
+    fmt, io,
     os::unix::io::{FromRawFd, RawFd},
     process,
     str::FromStr,
@@ -347,6 +349,10 @@ struct Opt {
     #[structopt(long = "socket-path", required_unless_one = &["fd", "socket", "print-capabilities"])]
     socket_path: Option<String>,
 
+    /// Name of group for the vhost-user socket
+    #[structopt(long = "socket-group", conflicts_with_all = &["fd", "print-capabilites"])]
+    socket_group: Option<String>,
+
     /// File descriptor for the listening socket
     #[structopt(long, required_unless_one = &["socket", "socket-path", "print-capabilities"], conflicts_with_all = &["sock", "socket"])]
     fd: Option<RawFd>,
@@ -442,16 +448,55 @@ fn main() {
         _ => !opt.no_readdirplus,
     };
 
-    let listener = match opt.fd.as_ref() {
-        Some(fd) => unsafe { Listener::from_raw_fd(*fd) },
+    let umask = if opt.socket_group.is_some() {
+        libc::S_IROTH | libc::S_IWOTH | libc::S_IXOTH
+    } else {
+        libc::S_IRGRP
+            | libc::S_IWGRP
+            | libc::S_IXGRP
+            | libc::S_IROTH
+            | libc::S_IWOTH
+            | libc::S_IXOTH
+    };
+
+    let (listener, socket_path) = match opt.fd.as_ref() {
+        Some(fd) => unsafe { (Listener::from_raw_fd(*fd), None) },
         None => {
+            // Set umask to ensure the socket is created with the right permissions
+            let old_umask = unsafe { libc::umask(umask) };
+
             let socket = opt.socket_path.as_ref().unwrap_or_else(|| {
                 println!("warning: use of deprecated parameter '--socket': Please use the '--socket-path' option instead.");
                 opt.socket.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
             });
-            Listener::new(socket, true).unwrap()
+            let listener = Listener::new(socket, true).unwrap();
+
+            // Restore umask
+            unsafe { libc::umask(old_umask) };
+
+            (listener, Some(socket.clone()))
         }
     };
+
+    if let Some(group_name) = opt.socket_group {
+        let c_name = CString::new(group_name).expect("invalid group name");
+        let group = unsafe { libc::getgrnam(c_name.as_ptr()) };
+        if group.is_null() {
+            error!("Couldn't resolve the group name specified for the socket path");
+            process::exit(1);
+        }
+
+        // safe to unwrap because clap ensures --socket-group can't be specified alongside --fd
+        let c_socket_path = CString::new(socket_path.unwrap()).expect("invalid socket path");
+        let ret = unsafe { libc::chown(c_socket_path.as_ptr(), u32::MAX, (*group).gr_gid) };
+        if ret != 0 {
+            error!(
+                "Couldn't set up the group for the socket path: {}",
+                std::io::Error::last_os_error()
+            );
+            process::exit(1);
+        }
+    }
 
     let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode);
     let fs_cfg = match sandbox.enter().unwrap() {
