@@ -31,8 +31,6 @@ use std::time::Duration;
 use xattrmap::{AppliedRule, XattrMap};
 
 const EMPTY_CSTR: &[u8] = b"\0";
-const PROC_CSTR: &[u8] = b"/proc/self/fd\0";
-const ROOT_CSTR: &[u8] = b"/\0";
 
 type Inode = u64;
 type Handle = u64;
@@ -87,6 +85,27 @@ enum InodeFile<'inode_lifetime> {
     Ref(&'inode_lifetime File),
 }
 
+/// Safe wrapper around libc::openat().
+fn openat(dir_fd: &impl AsRawFd, path: &str, flags: libc::c_int) -> io::Result<File> {
+    let path_cstr =
+        CString::new(path).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Safe because:
+    // - CString::new() has returned success and thus guarantees `path_cstr` is a valid
+    //   NUL-terminated string
+    // - this does not modify any memory
+    // - we check the return value
+    // We do not check `flags` because if the kernel cannot handle poorly specified flags then we
+    // have much bigger problems.
+    let fd = unsafe { libc::openat(dir_fd.as_raw_fd(), path_cstr.as_ptr(), flags) };
+    if fd >= 0 {
+        // Safe because we just opened this fd
+        Ok(unsafe { File::from_raw_fd(fd) })
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 /// Open `/proc/self/fd/{fd}` with the given flags to effectively duplicate the given `fd` with new
 /// flags (e.g. to turn an `O_PATH` file descriptor into one that can be used for I/O).
 fn reopen_fd_through_proc(
@@ -94,26 +113,13 @@ fn reopen_fd_through_proc(
     flags: libc::c_int,
     proc_self_fd: &File,
 ) -> io::Result<File> {
-    let fd_cstr = CString::new(format!("{}", fd.as_raw_fd()))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    // Safe because this doesn't modify any memory and we check the return value. We don't
-    // really check `flags` because if the kernel can't handle poorly specified flags then we
-    // have much bigger problems. Also, clear the `O_NOFOLLOW` flag if it is set since we need
-    // to follow the `/proc/self/fd` symlink to get the file.
-    let new_fd = unsafe {
-        libc::openat(
-            proc_self_fd.as_raw_fd(),
-            fd_cstr.as_ptr(),
-            flags & !libc::O_NOFOLLOW,
-        )
-    };
-    if new_fd >= 0 {
-        // Safe because we just opened this fd.
-        Ok(unsafe { File::from_raw_fd(new_fd) })
-    } else {
-        Err(io::Error::last_os_error())
-    }
+    // Clear the `O_NOFOLLOW` flag if it is set since we need to follow the `/proc/self/fd` symlink
+    // to get the file.
+    openat(
+        proc_self_fd,
+        format!("{}", fd.as_raw_fd()).as_str(),
+        flags & !libc::O_NOFOLLOW,
+    )
 }
 
 /// Returns true if it's safe to open this inode without O_PATH.
@@ -459,47 +465,22 @@ pub struct PassthroughFs {
 
 impl PassthroughFs {
     pub fn new(cfg: Config) -> io::Result<PassthroughFs> {
-        let fd = if let Some(fd) = cfg.proc_sfd_rawfd {
-            fd
+        let proc_self_fd = if let Some(fd) = cfg.proc_sfd_rawfd {
+            // Safe because this fd was provided by our caller
+            unsafe { File::from_raw_fd(fd) }
         } else {
-            // Safe because this is a constant value and a valid C string.
-            let proc_cstr = unsafe { CStr::from_bytes_with_nul_unchecked(PROC_CSTR) };
-
-            // Safe because this doesn't modify any memory and we check the return value.
-            let fd = unsafe {
-                libc::openat(
-                    libc::AT_FDCWD,
-                    proc_cstr.as_ptr(),
-                    libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            fd
-        };
-
-        // Safe because we just opened this fd or it was provided by our caller.
-        let proc_self_fd = unsafe { File::from_raw_fd(fd) };
-
-        // Safe because this is a constant value and a valid C string.
-        let root_cstr = unsafe { CStr::from_bytes_with_nul_unchecked(ROOT_CSTR) };
-
-        // Safe because this doesn't modify any memory and we check the return value.
-        let fd = unsafe {
-            libc::openat(
-                libc::AT_FDCWD,
-                root_cstr.as_ptr(),
+            openat(
+                &libc::AT_FDCWD,
+                "/proc/self/fd",
                 libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
+            )?
         };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
 
-        // Safe because we just opened this fd or it was provided by our caller.
-        let root_fd = unsafe { File::from_raw_fd(fd) };
+        let root_fd = openat(
+            &libc::AT_FDCWD,
+            "/",
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )?;
 
         // Check for statx() system call
         let use_statx = match statx(&proc_self_fd, None) {
@@ -886,26 +867,13 @@ impl FileSystem for PassthroughFs {
     type DirIter = ReadDir<Vec<u8>>;
 
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
-        let root = CString::new(self.cfg.root_dir.as_str()).expect("CString::new failed");
-
-        let path_fd = {
-            // Safe because this doesn't modify any memory and we check the return value.
-            // We use `O_PATH` because we just want this for traversing the directory tree
-            // and not for actually reading the contents.
-            let fd = unsafe {
-                libc::openat(
-                    libc::AT_FDCWD,
-                    root.as_ptr(),
-                    libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            // Safe because we just opened this fd above.
-            unsafe { File::from_raw_fd(fd) }
-        };
+        // We use `O_PATH` because we just want this for traversing the directory tree
+        // and not for actually reading the contents.
+        let path_fd = openat(
+            &libc::AT_FDCWD,
+            self.cfg.root_dir.as_str(),
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )?;
 
         let handle = if self.cfg.inode_file_handles {
             // Safe because this is a constant value and a valid C string.
