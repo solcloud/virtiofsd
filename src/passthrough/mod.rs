@@ -663,15 +663,16 @@ impl PassthroughFs {
                 .flatten()
                 .or_else(|| {
                     inodes.get_alt(&ids_altkey).filter(|data| {
-                        // When we have to fall back to looking up an inode by its IDs, ensure that
-                        // we hit an entry that does not have a file handle.  Entries with file
-                        // handles must also have a handle alt key, so if we have not found it by
-                        // that handle alt key, we must have found an entry with a mismatching
-                        // handle; i.e. an entry for a different file, even though it has the same
-                        // inode ID.
-                        // (This can happen when we look up a new file that has reused the inode ID
-                        // of some previously unlinked inode we still have in `.inodes`.)
-                        handle_altkey.is_none() || data.file_or_handle.handle().is_none()
+                        // When we have to fall back to looking up an inode by its inode ID, ensure
+                        // that we hit an entry that has a valid file descriptor.  Having an FD
+                        // open means that the inode cannot really be deleted until the FD is
+                        // closed, so that the inode ID remains valid until we evict the
+                        // `InodeData`.  With no FD open (and just a file handle), the inode can be
+                        // deleted while we still have our `InodeData`, and so the inode ID may be
+                        // reused by a completely different new inode.  Such inodes must be looked
+                        // up by file handle, because this handle contains a generation ID to
+                        // differentiate between the old and the new inode.
+                        matches!(data.file_or_handle, FileOrHandle::File(_))
                     })
                 })
                 .map(Arc::clone)
