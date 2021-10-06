@@ -14,7 +14,7 @@ use crate::filesystem::{
 use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
 use crate::read_dir::ReadDir;
-use file_handle::{FileHandle, MountFds};
+use file_handle::{FileHandle, MountFds, OpenableFileHandle};
 use stat::{stat64, statx, StatExt};
 use std::borrow::Cow;
 use std::collections::btree_map;
@@ -47,16 +47,7 @@ enum InodeAltKey {
 
 enum FileOrHandle {
     File(File),
-    Handle(FileHandle),
-}
-
-impl FileOrHandle {
-    fn handle(&self) -> Option<&FileHandle> {
-        match self {
-            FileOrHandle::File(_) => None,
-            FileOrHandle::Handle(h) => Some(h),
-        }
-    }
+    Handle(OpenableFileHandle),
 }
 
 struct InodeData {
@@ -622,20 +613,26 @@ impl PassthroughFs {
             // Safe because this is a constant value and a valid C string.
             let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
 
-            FileHandle::from_name_at_with_mount_fds(
-                &path_fd,
-                empty,
-                &self.mount_fds,
-                |fd, flags| reopen_fd_through_proc(&fd, flags, &self.proc_self_fd),
-            )
+            // Ignore errors, because having a handle is optional
+            FileHandle::from_name_at(&path_fd, empty).ok()
         } else {
-            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+            None
         };
+
+        let openable_handle = handle
+            .as_ref()
+            .map(|h| {
+                h.to_openable(&self.mount_fds, |fd, flags| {
+                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+                })
+                .ok() // Ignore errors, because having a handle is optional
+            })
+            .flatten();
 
         let st = self.stat(&path_fd, None)?;
 
         // Ignore errors, because having a handle is optional
-        let file_or_handle = if let Ok(h) = handle {
+        let file_or_handle = if let Some(h) = openable_handle {
             FileOrHandle::Handle(h)
         } else {
             FileOrHandle::File(path_fd)
@@ -658,7 +655,7 @@ impl PassthroughFs {
         // Note that this will always be `None` if `cfg.inode_file_handles` is false, but we only
         // really need this alt key when we do not have an `O_PATH` fd open for every inode.  So if
         // `cfg.inode_file_handles` is false, we do not need this key anyway.
-        let handle_altkey = file_or_handle.handle().map(|h| InodeAltKey::Handle(*h));
+        let handle_altkey = handle.map(InodeAltKey::Handle);
 
         let data = {
             let inodes = self.inodes.read().unwrap();
@@ -896,20 +893,26 @@ impl FileSystem for PassthroughFs {
             // Safe because this is a constant value and a valid C string.
             let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
 
-            FileHandle::from_name_at_with_mount_fds(
-                &path_fd,
-                empty,
-                &self.mount_fds,
-                |fd, flags| reopen_fd_through_proc(&fd, flags, &self.proc_self_fd),
-            )
+            // Ignore errors, because having a handle is optional
+            FileHandle::from_name_at(&path_fd, empty).ok()
         } else {
-            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+            None
         };
+
+        let openable_handle = handle
+            .as_ref()
+            .map(|h| {
+                h.to_openable(&self.mount_fds, |fd, flags| {
+                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+                })
+                .ok() // Ignore errors, because having a handle is optional
+            })
+            .flatten();
 
         let st = self.stat(&path_fd, None)?;
 
         // Ignore errors, because having a handle is optional
-        let file_or_handle = if let Ok(h) = handle {
+        let file_or_handle = if let Some(h) = openable_handle {
             FileOrHandle::Handle(h)
         } else {
             FileOrHandle::File(path_fd)
@@ -919,12 +922,6 @@ impl FileSystem for PassthroughFs {
         // value because this system call always succeeds. We need to clear the umask here because
         // we want the client to be able to set all the bits in the mode.
         unsafe { libc::umask(0o000) };
-
-        // Copy file handle (if there is one) before moving file_or_handle into the new InodeData
-        // object
-        // (This is always `None` if `cfg.inode_file_handles` is false.  As explained in
-        // `do_lookup()`, that is alright.)
-        let handle_altkey = file_or_handle.handle().map(|h| InodeAltKey::Handle(*h));
 
         let mut inodes = self.inodes.write().unwrap();
 
@@ -948,8 +945,8 @@ impl FileSystem for PassthroughFs {
             },
             fuse::ROOT_ID,
         );
-        if let Some(altkey) = handle_altkey {
-            inodes.insert_alt(altkey, fuse::ROOT_ID);
+        if let Some(h) = handle {
+            inodes.insert_alt(InodeAltKey::Handle(h), fuse::ROOT_ID);
         }
 
         let mut opts = if self.cfg.readdirplus {
