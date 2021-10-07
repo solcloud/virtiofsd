@@ -13,13 +13,17 @@ use std::sync::{Arc, Mutex, RwLock};
 const MAX_HANDLE_SZ: usize = 128;
 const EMPTY_CSTR: &[u8] = b"\0";
 
+struct MountFd {
+    file: File,
+}
+
 /**
  * Creating a file handle only returns a mount ID; opening a file handle requires an open fd on the
  * respective mount.  This is a type in which we can store fds that we know are associated with a
  * given mount ID, so that when opening a handle we can look it up.
  */
 pub struct MountFds {
-    map: Arc<RwLock<HashMap<u64, File>>>,
+    map: Arc<RwLock<HashMap<u64, MountFd>>>,
 
     /// /proc/self/mountinfo
     mountinfo: Mutex<File>,
@@ -41,7 +45,7 @@ pub struct FileHandle {
 
 pub struct OpenableFileHandle {
     handle: FileHandle,
-    mount_fd_map: Arc<RwLock<HashMap<u64, File>>>,
+    mount_fd_map: Arc<RwLock<HashMap<u64, MountFd>>>,
 }
 
 extern "C" {
@@ -205,7 +209,9 @@ impl FileHandle {
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )?;
 
-            mount_fds.map.write().unwrap().insert(self.mnt_id, file);
+            let mount_fd = MountFd { file };
+
+            mount_fds.map.write().unwrap().insert(self.mnt_id, mount_fd);
         }
 
         Ok(OpenableFileHandle {
@@ -250,6 +256,6 @@ impl OpenableFileHandle {
             .get(&self.handle.mnt_id)
             .unwrap();
 
-        self.do_open(mount_file, flags)
+        self.do_open(&mount_file.file, flags)
     }
 }
