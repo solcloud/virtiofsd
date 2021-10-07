@@ -8,7 +8,7 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 const MAX_HANDLE_SZ: usize = 128;
 const EMPTY_CSTR: &[u8] = b"\0";
@@ -19,7 +19,7 @@ const EMPTY_CSTR: &[u8] = b"\0";
  * given mount ID, so that when opening a handle we can look it up.
  */
 pub struct MountFds {
-    map: RwLock<HashMap<u64, File>>,
+    map: Arc<RwLock<HashMap<u64, File>>>,
 
     /// /proc/self/mountinfo
     mountinfo: Mutex<File>,
@@ -41,6 +41,7 @@ pub struct FileHandle {
 
 pub struct OpenableFileHandle {
     handle: FileHandle,
+    mount_fd_map: Arc<RwLock<HashMap<u64, File>>>,
 }
 
 extern "C" {
@@ -207,7 +208,10 @@ impl FileHandle {
             mount_fds.map.write().unwrap().insert(self.mnt_id, file);
         }
 
-        Ok(OpenableFileHandle { handle: *self })
+        Ok(OpenableFileHandle {
+            handle: *self,
+            mount_fd_map: mount_fds.map.clone(),
+        })
     }
 }
 
@@ -218,7 +222,7 @@ impl OpenableFileHandle {
      * `mount_fd` must be an open non-`O_PATH` file descriptor for an inode on the same mount as
      * the file to be opened, i.e. the mount given by `self.handle.mnt_id`.
      */
-    fn open(&self, mount_fd: &impl AsRawFd, flags: libc::c_int) -> io::Result<File> {
+    fn do_open(&self, mount_fd: &impl AsRawFd, flags: libc::c_int) -> io::Result<File> {
         let ret = unsafe { open_by_handle_at(mount_fd.as_raw_fd(), &self.handle.handle, flags) };
         if ret >= 0 {
             // Safe because `open_by_handle_at()` guarantees this is a valid fd
@@ -230,16 +234,13 @@ impl OpenableFileHandle {
     }
 
     /**
-     * Open a file handle, using the given `mount_fds` hash map.
+     * Open a file handle, using our mount FDs hash map.
      *
-     * Look up `self.handle.mnt_id` in `mount_fds`, and pass the result to `self.open()`.
+     * Look up `self.handle.mnt_id` in `self.mount_fd_map`, and pass the result to
+     * `self.do_open()`.
      */
-    pub fn open_with_mount_fds(
-        &self,
-        mount_fds: &MountFds,
-        flags: libc::c_int,
-    ) -> io::Result<File> {
-        let mount_fds_locked = mount_fds.map.read();
+    pub fn open(&self, flags: libc::c_int) -> io::Result<File> {
+        let mount_fds_locked = self.mount_fd_map.read();
 
         // Creating an `OpenableFileHandle` requires an associated mount FD, so this lookup must
         // not fail.
@@ -249,6 +250,6 @@ impl OpenableFileHandle {
             .get(&self.handle.mnt_id)
             .unwrap();
 
-        self.open(mount_file, flags)
+        self.do_open(mount_file, flags)
     }
 }

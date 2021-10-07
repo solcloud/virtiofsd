@@ -122,11 +122,11 @@ fn is_safe_inode(mode: u32) -> bool {
 
 impl<'a> InodeData {
     /// Get an `O_PATH` file for this inode
-    fn get_file(&'a self, mount_fds: &MountFds) -> io::Result<InodeFile<'a>> {
+    fn get_file(&'a self) -> io::Result<InodeFile<'a>> {
         match &self.file_or_handle {
             FileOrHandle::File(f) => Ok(InodeFile::Ref(f)),
             FileOrHandle::Handle(h) => {
-                let file = h.open_with_mount_fds(mount_fds, libc::O_PATH)?;
+                let file = h.open(libc::O_PATH)?;
                 Ok(InodeFile::Owned(file))
             }
         }
@@ -134,12 +134,7 @@ impl<'a> InodeData {
 
     /// Open this inode with the given flags
     /// (always returns a new (i.e. `Owned`) file, hence the static lifetime)
-    fn open_file(
-        &self,
-        flags: libc::c_int,
-        proc_self_fd: &File,
-        mount_fds: &MountFds,
-    ) -> io::Result<InodeFile<'static>> {
+    fn open_file(&self, flags: libc::c_int, proc_self_fd: &File) -> io::Result<InodeFile<'static>> {
         if !is_safe_inode(self.mode) {
             return Err(ebadf());
         }
@@ -150,7 +145,7 @@ impl<'a> InodeData {
                 Ok(InodeFile::Owned(new_file))
             }
             FileOrHandle::Handle(h) => {
-                let new_file = h.open_with_mount_fds(mount_fds, flags)?;
+                let new_file = h.open(flags)?;
                 Ok(InodeFile::Owned(new_file))
             }
         }
@@ -577,7 +572,7 @@ impl PassthroughFs {
             flags &= !libc::O_DIRECT;
         }
 
-        data.open_file(flags | libc::O_CLOEXEC, &self.proc_self_fd, &self.mount_fds)?
+        data.open_file(flags | libc::O_CLOEXEC, &self.proc_self_fd)?
             .into_file()
     }
 
@@ -590,7 +585,7 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let p_file = p.get_file(&self.mount_fds)?;
+        let p_file = p.get_file()?;
 
         let path_fd = {
             // Safe because this doesn't modify any memory and we check the return value.
@@ -773,7 +768,7 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let inode_file = data.get_file(&self.mount_fds)?;
+        let inode_file = data.get_file()?;
         let st = self.stat(&inode_file, None)?.st;
 
         Ok((st, self.cfg.attr_timeout))
@@ -788,7 +783,7 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let parent_file = data.get_file(&self.mount_fds)?;
+        let parent_file = data.get_file()?;
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe { libc::unlinkat(parent_file.as_raw_fd(), name.as_ptr(), flags) };
@@ -974,7 +969,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let inode_file = data.get_file(&self.mount_fds)?;
+        let inode_file = data.get_file()?;
         let mut out = MaybeUninit::<libc::statvfs64>::zeroed();
 
         // Safe because this will only modify `out` and we check the return value.
@@ -1040,7 +1035,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let parent_file = data.get_file(&self.mount_fds)?;
+        let parent_file = data.get_file()?;
 
         let res = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
@@ -1121,7 +1116,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let parent_file = data.get_file(&self.mount_fds)?;
+        let parent_file = data.get_file()?;
 
         let fd = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
@@ -1311,13 +1306,9 @@ impl FileSystem for PassthroughFs {
         // In this case, we need to open a new O_RDWR FD
         let rdwr_inode_file = handle.is_none() && valid.intersects(SetattrValid::SIZE);
         let inode_file = if rdwr_inode_file {
-            inode_data.open_file(
-                libc::O_NONBLOCK | libc::O_RDWR,
-                &self.proc_self_fd,
-                &self.mount_fds,
-            )?
+            inode_data.open_file(libc::O_NONBLOCK | libc::O_RDWR, &self.proc_self_fd)?
         } else {
-            inode_data.get_file(&self.mount_fds)?
+            inode_data.get_file()?
         };
 
         enum Data {
@@ -1470,8 +1461,8 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let old_file = old_inode.get_file(&self.mount_fds)?;
-        let new_file = new_inode.get_file(&self.mount_fds)?;
+        let old_file = old_inode.get_file()?;
+        let new_file = new_inode.get_file()?;
 
         // Safe because this doesn't modify any memory and we check the return value.
         // TODO: Switch to libc::renameat2 once https://github.com/rust-lang/libc/pull/1508 lands
@@ -1510,7 +1501,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let parent_file = data.get_file(&self.mount_fds)?;
+        let parent_file = data.get_file()?;
 
         let res = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
@@ -1558,8 +1549,8 @@ impl FileSystem for PassthroughFs {
         // Safe because this is a constant value and a valid C string.
         let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
 
-        let inode_file = data.get_file(&self.mount_fds)?;
-        let newparent_file = new_inode.get_file(&self.mount_fds)?;
+        let inode_file = data.get_file()?;
+        let newparent_file = new_inode.get_file()?;
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
@@ -1593,7 +1584,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let parent_file = data.get_file(&self.mount_fds)?;
+        let parent_file = data.get_file()?;
 
         let res = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
@@ -1617,7 +1608,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let inode_file = data.get_file(&self.mount_fds)?;
+        let inode_file = data.get_file()?;
 
         let mut buf = vec![0; libc::PATH_MAX as usize];
 
@@ -1707,7 +1698,7 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let inode_file = data.get_file(&self.mount_fds)?;
+        let inode_file = data.get_file()?;
         let st = self.stat(&inode_file, None)?.st;
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
@@ -1788,7 +1779,7 @@ impl FileSystem for PassthroughFs {
                 )
             }
         } else {
-            let file = data.get_file(&self.mount_fds)?;
+            let file = data.get_file()?;
 
             self.drop_security_capability(file.as_raw_fd())?;
 
@@ -1859,7 +1850,7 @@ impl FileSystem for PassthroughFs {
                 )
             }
         } else {
-            let file = data.get_file(&self.mount_fds)?;
+            let file = data.get_file()?;
 
             let procname = CString::new(format!("{}", file.as_raw_fd()))
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -1923,7 +1914,7 @@ impl FileSystem for PassthroughFs {
                 )
             }
         } else {
-            let file = data.get_file(&self.mount_fds)?;
+            let file = data.get_file()?;
 
             let procname = CString::new(format!("{}", file.as_raw_fd()))
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -1984,7 +1975,7 @@ impl FileSystem for PassthroughFs {
             // Safe because this doesn't modify any memory and we check the return value.
             unsafe { libc::fremovexattr(file.as_raw_fd(), name.as_ptr()) }
         } else {
-            let file = data.get_file(&self.mount_fds)?;
+            let file = data.get_file()?;
 
             let procname = CString::new(format!("{}", file.as_raw_fd()))
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
