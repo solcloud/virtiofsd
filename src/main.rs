@@ -9,7 +9,11 @@ use passthrough::xattrmap::XattrMap;
 use seccomp::SeccompAction;
 use std::{
     convert::{self, TryFrom},
-    env, error, fmt, io, process,
+    env, error,
+    ffi::CString,
+    fmt, io,
+    os::unix::io::{FromRawFd, RawFd},
+    process,
     str::FromStr,
     sync::{Arc, Mutex, RwLock},
 };
@@ -55,6 +59,12 @@ enum Error {
     HandleEventNotEpollIn,
     /// Failed to handle unknown event.
     HandleEventUnknownEvent,
+    /// Invalid compat argument found on the command line.
+    InvalidCompatArgument,
+    /// Invalid compat value found on the command line.
+    InvalidCompatValue,
+    /// Invalid xattr map compat argument found on the command line.
+    InvalidXattrMap,
     /// Iterating through the queue failed.
     IterateQueue,
     /// No memory configured.
@@ -81,7 +91,7 @@ impl convert::From<Error> for io::Error {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum LogLevel {
     Error,
     Warn,
@@ -330,20 +340,28 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
     })
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Clone, Debug, StructOpt)]
 #[structopt(name = "virtiofsd backend", about = "Launch a virtiofsd backend.")]
 struct Opt {
     /// Shared directory path
-    #[structopt(long, required_unless = "print-capabilities")]
+    #[structopt(long)]
     shared_dir: Option<String>,
 
-    /// vhost-user socket path [deprecated]
-    #[structopt(long)]
-    sock: Option<String>,
+    /// vhost-user socket path (deprecated)
+    #[structopt(long, required_unless_one = &["fd", "socket-path", "print-capabilities"])]
+    socket: Option<String>,
 
     /// vhost-user socket path
-    #[structopt(long, required_unless_one = &["sock", "print-capabilities"])]
-    socket: Option<String>,
+    #[structopt(long = "socket-path", required_unless_one = &["fd", "socket", "print-capabilities"])]
+    socket_path: Option<String>,
+
+    /// Name of group for the vhost-user socket
+    #[structopt(long = "socket-group", conflicts_with_all = &["fd", "print-capabilites"])]
+    socket_group: Option<String>,
+
+    /// File descriptor for the listening socket
+    #[structopt(long, required_unless_one = &["socket", "socket-path", "print-capabilities"], conflicts_with_all = &["sock", "socket"])]
+    fd: Option<RawFd>,
 
     /// Maximum thread pool size
     #[structopt(long, default_value = "64")]
@@ -397,6 +415,77 @@ struct Opt {
     /// Log level (error, warn, info, debug, trace)
     #[structopt(long = "log-level", default_value = "error")]
     log_level: LogLevel,
+
+    /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
+    #[structopt(long = "rlimit-nofile")]
+    rlimit_nofile: Option<u64>,
+
+    /// Options in a format compatible with the legacy implementation
+    #[structopt(short = "o")]
+    compat_options: Option<Vec<String>>,
+}
+
+fn parse_compat(opt: Opt) -> Result<Opt> {
+    fn parse_tuple(opt: &mut Opt, tuple: &str) -> Result<()> {
+        match tuple.split('=').collect::<Vec<&str>>()[..] {
+            ["xattrmap", value] => {
+                opt.xattrmap = Some(XattrMap::try_from(value).map_err(|_| Error::InvalidXattrMap)?)
+            }
+            ["cache", value] => match value {
+                "auto" => opt.cache = CachePolicy::Auto,
+                "always" => opt.cache = CachePolicy::Always,
+                "none" => opt.cache = CachePolicy::Never,
+                _ => return Err(Error::InvalidCompatValue),
+            },
+            ["loglevel", value] => match value {
+                "debug" => opt.log_level = LogLevel::Debug,
+                "info" => opt.log_level = LogLevel::Info,
+                "warn" => opt.log_level = LogLevel::Warn,
+                "err" => opt.log_level = LogLevel::Error,
+                _ => return Err(Error::InvalidCompatValue),
+            },
+            ["sandbox", value] => match value {
+                "namespace" => opt.sandbox = SandboxMode::Namespace,
+                "chroot" => opt.sandbox = SandboxMode::Chroot,
+                _ => return Err(Error::InvalidCompatValue),
+            },
+            ["source", value] => opt.shared_dir = Some(value.to_string()),
+            _ => return Err(Error::InvalidCompatArgument),
+        }
+        Ok(())
+    }
+
+    fn parse_single(opt: &mut Opt, option: &str) -> Result<()> {
+        match option {
+            "xattr" => opt.xattr = true,
+            "no_xattr" => opt.xattr = false,
+            "readdirplus" => opt.no_readdirplus = false,
+            "no_readdirplus" => opt.no_readdirplus = true,
+            "writeback" => opt.writeback = true,
+            "no_writeback" => opt.writeback = false,
+            "allow_direct_io" => opt.allow_direct_io = true,
+            "no_allow_direct_io" => opt.allow_direct_io = false,
+            "announce_submounts" => opt.announce_submounts = true,
+            _ => return Err(Error::InvalidCompatArgument),
+        }
+        Ok(())
+    }
+
+    let mut clean_opt = opt.clone();
+
+    if let Some(compat_options) = opt.compat_options.as_ref() {
+        for line in compat_options {
+            for option in line.to_string().split(',') {
+                if option.contains('=') {
+                    parse_tuple(&mut clean_opt, option)?;
+                } else {
+                    parse_single(&mut clean_opt, option)?;
+                }
+            }
+        }
+    }
+
+    Ok(clean_opt)
 }
 
 fn print_capabilities() {
@@ -414,7 +503,7 @@ fn initialize_logging(log_level: &LogLevel) {
 }
 
 fn main() {
-    let opt = Opt::from_args();
+    let opt = parse_compat(Opt::from_args()).expect("invalid compat argument");
 
     if opt.print_capabilities {
         print_capabilities();
@@ -423,13 +512,13 @@ fn main() {
 
     initialize_logging(&opt.log_level);
 
-    // It's safe to unwrap here because clap ensures 'shared_dir' is present unless
-    // 'print_capabilities' is passed.
-    let shared_dir = opt.shared_dir.as_ref().unwrap();
-    let socket = opt.socket.as_ref().unwrap_or_else(|| {
-        println!("warning: use of deprecated parameter '--sock': Please use the '--socket' option instead.");
-        opt.sock.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
-    });
+    let shared_dir = match opt.shared_dir.as_ref() {
+        Some(s) => s,
+        None => {
+            error!("missing \"--shared-dir\" or \"-o source\" option");
+            process::exit(1);
+        }
+    };
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
     let xattr = if xattrmap.is_some() { true } else { opt.xattr };
@@ -440,9 +529,67 @@ fn main() {
         _ => !opt.no_readdirplus,
     };
 
-    let listener = Listener::new(socket, true).unwrap();
+    let umask = if opt.socket_group.is_some() {
+        libc::S_IROTH | libc::S_IWOTH | libc::S_IXOTH
+    } else {
+        libc::S_IRGRP
+            | libc::S_IWGRP
+            | libc::S_IXGRP
+            | libc::S_IROTH
+            | libc::S_IWOTH
+            | libc::S_IXOTH
+    };
 
-    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode);
+    let (listener, socket_path) = match opt.fd.as_ref() {
+        Some(fd) => unsafe { (Listener::from_raw_fd(*fd), None) },
+        None => {
+            // Set umask to ensure the socket is created with the right permissions
+            let old_umask = unsafe { libc::umask(umask) };
+
+            let socket = opt.socket_path.as_ref().unwrap_or_else(|| {
+                println!("warning: use of deprecated parameter '--socket': Please use the '--socket-path' option instead.");
+                opt.socket.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
+            });
+            let listener = Listener::new(socket, true).unwrap();
+
+            // Restore umask
+            unsafe { libc::umask(old_umask) };
+
+            (listener, Some(socket.clone()))
+        }
+    };
+
+    if let Some(group_name) = opt.socket_group {
+        let c_name = CString::new(group_name).expect("invalid group name");
+        let group = unsafe { libc::getgrnam(c_name.as_ptr()) };
+        if group.is_null() {
+            error!("Couldn't resolve the group name specified for the socket path");
+            process::exit(1);
+        }
+
+        // safe to unwrap because clap ensures --socket-group can't be specified alongside --fd
+        let c_socket_path = CString::new(socket_path.unwrap()).expect("invalid socket path");
+        let ret = unsafe { libc::chown(c_socket_path.as_ptr(), u32::MAX, (*group).gr_gid) };
+        if ret != 0 {
+            error!(
+                "Couldn't set up the group for the socket path: {}",
+                std::io::Error::last_os_error()
+            );
+            process::exit(1);
+        }
+    }
+
+    let rlimit_nofile = if let Some(rlimit_nofile) = opt.rlimit_nofile {
+        if rlimit_nofile != 0 {
+            Some(rlimit_nofile)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile);
     let fs_cfg = match sandbox.enter().unwrap() {
         Some(child_pid) => {
             unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
