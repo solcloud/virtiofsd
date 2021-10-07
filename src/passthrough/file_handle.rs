@@ -8,6 +8,7 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 const MAX_HANDLE_SZ: usize = 128;
@@ -15,6 +16,7 @@ const EMPTY_CSTR: &[u8] = b"\0";
 
 struct MountFd {
     file: File,
+    refcount: AtomicUsize,
 }
 
 /**
@@ -173,7 +175,19 @@ impl FileHandle {
     where
         F: FnOnce(RawFd, libc::c_int) -> io::Result<File>,
     {
-        if !mount_fds.map.read().unwrap().contains_key(&self.mnt_id) {
+        // The conditional block below (`if !existing_mount_fd`) takes a `.write()` lock to insert
+        // a new mount FD into the hash map.  Separate the `.read()` lock we need to take for the
+        // lookup (and hold until `mount_fd` is dropped) from the block below so we do not get into
+        // a deadlock.
+        let existing_mount_fd = match mount_fds.map.read().unwrap().get(&self.mnt_id) {
+            Some(mount_fd) => {
+                mount_fd.refcount.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        };
+
+        if !existing_mount_fd {
             // `open_by_handle_at()` needs a non-`O_PATH` fd, which we will need to open here.  We
             // are going to open the filesystem's mount point, but we do not know whether that is a
             // special file[1], and we must not open special files with anything but `O_PATH`, so
@@ -209,9 +223,20 @@ impl FileHandle {
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )?;
 
-            let mount_fd = MountFd { file };
+            let mount_fds_locked = mount_fds.map.write();
 
-            mount_fds.map.write().unwrap().insert(self.mnt_id, mount_fd);
+            if let Some(mount_fd) = mount_fds_locked.as_ref().unwrap().get(&self.mnt_id) {
+                // A mount FD was added concurrently while we did not hold a lock on
+                // `mount_fds.map` -- use that entry (`file` will be dropped).
+                mount_fd.refcount.fetch_add(1, Ordering::Relaxed);
+            } else {
+                let mount_fd = MountFd {
+                    file,
+                    refcount: AtomicUsize::new(1),
+                };
+
+                mount_fds_locked.unwrap().insert(self.mnt_id, mount_fd);
+            }
         }
 
         Ok(OpenableFileHandle {
@@ -257,5 +282,32 @@ impl OpenableFileHandle {
             .unwrap();
 
         self.do_open(&mount_file.file, flags)
+    }
+}
+
+impl Drop for OpenableFileHandle {
+    fn drop(&mut self) {
+        // Take a write lock so we do not have to drop and reaquire it between decrementing the
+        // refcount and removing the `MountFd` object from the map -- otherwise, a new user might
+        // sneak in while we do not hold any lock.
+        let mut mount_fds_locked = self.mount_fd_map.write();
+
+        let drop_mount_fd = {
+            // We have a strong reference to our `MountFd`, so this must not fail
+            let mount_file = mount_fds_locked
+                .as_ref()
+                .unwrap()
+                .get(&self.handle.mnt_id)
+                .unwrap();
+
+            mount_file.refcount.fetch_sub(1, Ordering::AcqRel) == 1
+        };
+
+        if drop_mount_fd {
+            mount_fds_locked
+                .as_mut()
+                .unwrap()
+                .remove(&self.handle.mnt_id);
+        }
     }
 }
