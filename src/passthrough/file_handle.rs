@@ -4,11 +4,11 @@
 
 use crate::passthrough::stat::statx;
 use std::collections::HashMap;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::fs::File;
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 const MAX_HANDLE_SZ: usize = 128;
 
@@ -17,9 +17,11 @@ const MAX_HANDLE_SZ: usize = 128;
  * respective mount.  This is a type in which we can store fds that we know are associated with a
  * given mount ID, so that when opening a handle we can look it up.
  */
-#[derive(Default)]
 pub struct MountFds {
     map: RwLock<HashMap<u64, File>>,
+
+    /// /proc/self/mountinfo
+    mountinfo: Mutex<File>,
 }
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
@@ -55,8 +57,42 @@ extern "C" {
 }
 
 impl MountFds {
-    pub fn new() -> Self {
-        MountFds::default()
+    pub fn new(mountinfo: File) -> Self {
+        MountFds {
+            map: Default::default(),
+            mountinfo: Mutex::new(mountinfo),
+        }
+    }
+
+    /// Given a mount ID, return the mount root path (by reading `/proc/self/mountinfo`)
+    fn get_mount_root(&self, mount_id: u64) -> io::Result<String> {
+        let mountinfo = {
+            let mountinfo_file = &mut *self.mountinfo.lock().unwrap();
+
+            mountinfo_file.seek(SeekFrom::Start(0))?;
+
+            let mut mountinfo = String::new();
+            mountinfo_file.read_to_string(&mut mountinfo)?;
+
+            mountinfo
+        };
+
+        let path = mountinfo.split('\n').find_map(|line| {
+            let mut columns = line.split(char::is_whitespace);
+
+            if columns.next()?.parse::<u64>().ok()? != mount_id {
+                return None;
+            }
+
+            // Skip parent mount ID, major:minor device ID, and the root within the filesystem
+            // (to get to the mount path)
+            columns.nth(3)
+        });
+
+        match path {
+            Some(p) => Ok(String::from(p)),
+            None => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+        }
     }
 }
 
@@ -108,37 +144,40 @@ impl FileHandle {
         let handle = Self::from_name_at(dir, path)?;
 
         if !mount_fds.map.read().unwrap().contains_key(&handle.mnt_id) {
-            // `open_by_handle_at()` needs a non-`O_PATH` fd, which we will need to open here.
-            // We do not know whether `dir`/`path` is a special file, though, and we must not open
-            // special files with anything but `O_PATH`, so we have to get some `O_PATH` fd first
-            // that we can stat to find out whether it is safe to open.
-            // (When opening a new fd here, keep a `File` object around so the fd is closed when it
-            // goes out of scope.)
-            let (path_fd, _path_file) = if path.to_bytes().is_empty() {
-                (dir.as_raw_fd(), None)
-            } else {
-                let ret = unsafe { libc::openat(dir.as_raw_fd(), path.as_ptr(), libc::O_PATH) };
-                if ret < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                // `openat()` guarantees `ret` is a valid fd
-                (ret, Some(unsafe { File::from_raw_fd(ret) }))
-            };
+            // `open_by_handle_at()` needs a non-`O_PATH` fd, which we will need to open here.  We
+            // are going to open the filesystem's mount point, but we do not know whether that is a
+            // special file[1], and we must not open special files with anything but `O_PATH`, so
+            // we have to get some `O_PATH` fd first that we can stat to find out whether it is
+            // safe to open.
+            // [1] While mount points are commonly directories, it is entirely possible for a
+            //     filesystem's root inode to be a regular or even special file.
+            let mount_point = mount_fds.get_mount_root(handle.mnt_id)?;
+            let c_mount_point = CString::new(mount_point)?;
+            let mount_point_fd = unsafe { libc::open(c_mount_point.as_ptr(), libc::O_PATH) };
+            if mount_point_fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
 
-            // Ensure that `path_fd` refers to an inode with the mount ID we need
-            let stx = statx(&path_fd, None)?;
+            // Safe because we have just opened this FD
+            let mount_point_path = unsafe { File::from_raw_fd(mount_point_fd) };
+
+            // Ensure that `mount_point_path` refers to an inode with the mount ID we need
+            let stx = statx(&mount_point_path, None)?;
             if stx.mnt_id != handle.mnt_id {
                 return Err(io::Error::from_raw_os_error(libc::EIO));
             }
 
-            // Ensure that we can safely reopen `path_fd` with `O_RDONLY`
+            // Ensure that we can safely reopen `mount_point_path` with `O_RDONLY`
             let file_type = stx.st.st_mode & libc::S_IFMT;
             if file_type != libc::S_IFREG && file_type != libc::S_IFDIR {
                 return Err(io::Error::from_raw_os_error(libc::EIO));
             }
 
             // Now that we know that this is a regular file or directory, really open it
-            let file = reopen_fd(path_fd, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC)?;
+            let file = reopen_fd(
+                mount_point_path.as_raw_fd(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )?;
 
             mount_fds.map.write().unwrap().insert(handle.mnt_id, file);
         }

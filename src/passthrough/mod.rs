@@ -489,7 +489,6 @@ impl PassthroughFs {
             libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )?;
 
-        #[allow(unused_variables)] // TODO: Remove once used
         let mountinfo_fd = if let Some(fd) = cfg.proc_mountinfo_rawfd.take() {
             fd
         } else {
@@ -511,7 +510,7 @@ impl PassthroughFs {
             next_inode: AtomicU64::new(fuse::ROOT_ID + 1),
             handles: RwLock::new(BTreeMap::new()),
             next_handle: AtomicU64::new(0),
-            mount_fds: MountFds::new(),
+            mount_fds: MountFds::new(mountinfo_fd),
             proc_self_fd,
             root_fd,
             writeback: AtomicBool::new(false),
