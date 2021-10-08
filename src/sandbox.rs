@@ -6,7 +6,7 @@ use std::ffi::CString;
 use std::fmt;
 use std::fs::{self, File};
 use std::io;
-use std::os::unix::io::FromRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::str::FromStr;
 
 use tempdir::TempDir;
@@ -41,10 +41,14 @@ pub enum Error {
     MountNewRoot(io::Error),
     /// Error mounting target directory.
     MountTarget(io::Error),
+    /// Failed to open `/proc/self/mountinfo`.
+    OpenMountinfo(io::Error),
     /// Failed to open new root.
     OpenNewRoot(io::Error),
     /// Failed to open old root.
     OpenOldRoot(io::Error),
+    /// Failed to open `/proc/self`.
+    OpenProcSelf(io::Error),
     /// Failed to open `/proc/self/fd`.
     OpenProcSelfFd(io::Error),
     /// Error switching root directory.
@@ -101,6 +105,8 @@ pub struct Sandbox {
     shared_dir: String,
     /// A `File` object for `/proc/self/fd` obtained from the sandboxed context.
     proc_self_fd: Option<File>,
+    /// A `File` object for `/proc/self/mountinfo` obtained from the sandboxed context.
+    mountinfo_fd: Option<File>,
     /// Mechanism to be used for setting up the sandbox.
     sandbox_mode: SandboxMode,
     /// Value to set as RLIMIT_NOFILE
@@ -112,13 +118,14 @@ impl Sandbox {
         Sandbox {
             shared_dir,
             proc_self_fd: None,
+            mountinfo_fd: None,
             sandbox_mode,
             rlimit_nofile,
         }
     }
 
-    // Make `self.shared_dir` our root directory, and get an isolated file descriptor for
-    // `/proc/self/fd`.
+    // Make `self.shared_dir` our root directory, and get isolated file descriptors for
+    // `/proc/self/fd` and '/proc/self/mountinfo`.
     //
     // This is based on virtiofsd's setup_namespaces() and setup_mounts(), and it's very similar to
     // the strategy used in containers. Consists on a careful sequence of mounts and bind-mounts to
@@ -127,6 +134,19 @@ impl Sandbox {
     //
     // It's ugly, but it's the only way until Linux implements a proper containerization API.
     fn setup_mounts(&mut self) -> Result<(), Error> {
+        // Open an FD to `/proc/self` so we can later open `/proc/self/mountinfo`.
+        // (If we opened `/proc/self/mountinfo` now, it would appear empty by the end of this
+        // function, which is why we need to defer opening it until then.)
+        let c_proc_self = CString::new("/proc/self").unwrap();
+        let proc_self_raw = unsafe { libc::open(c_proc_self.as_ptr(), libc::O_PATH) };
+        if proc_self_raw < 0 {
+            return Err(Error::OpenProcSelf(std::io::Error::last_os_error()));
+        }
+
+        // Encapsulate the `/proc/self` FD in a `File` object so it is closed when this function
+        // returns
+        let proc_self = unsafe { File::from_raw_fd(proc_self_raw) };
+
         // Ensure our mount changes don't affect the parent mount namespace.
         let c_root_dir = CString::new("/").unwrap();
         let ret = unsafe {
@@ -289,6 +309,16 @@ impl Sandbox {
         unsafe { libc::close(newroot_fd) };
         unsafe { libc::close(oldroot_fd) };
 
+        // Open `/proc/self/mountinfo` now
+        let c_mountinfo = CString::new("mountinfo").unwrap();
+        let mountinfo_fd =
+            unsafe { libc::openat(proc_self.as_raw_fd(), c_mountinfo.as_ptr(), libc::O_RDONLY) };
+        if mountinfo_fd < 0 {
+            return Err(Error::OpenMountinfo(std::io::Error::last_os_error()));
+        }
+        // Safe because we just opened this fd.
+        self.mountinfo_fd = Some(unsafe { File::from_raw_fd(mountinfo_fd) });
+
         Ok(())
     }
 
@@ -361,6 +391,14 @@ impl Sandbox {
         // Safe because we just opened this fd.
         self.proc_self_fd = Some(unsafe { File::from_raw_fd(proc_self_fd) });
 
+        let c_mountinfo = CString::new("/proc/self/mountinfo").unwrap();
+        let mountinfo_fd = unsafe { libc::open(c_mountinfo.as_ptr(), libc::O_RDONLY) };
+        if mountinfo_fd < 0 {
+            return Err(Error::OpenMountinfo(std::io::Error::last_os_error()));
+        }
+        // Safe because we just opened this fd.
+        self.mountinfo_fd = Some(unsafe { File::from_raw_fd(mountinfo_fd) });
+
         let c_shared_dir = CString::new(self.shared_dir.clone()).unwrap();
         let ret = unsafe { libc::chroot(c_shared_dir.as_ptr()) };
         if ret != 0 {
@@ -390,6 +428,10 @@ impl Sandbox {
 
     pub fn get_proc_self_fd(&mut self) -> Option<File> {
         self.proc_self_fd.take()
+    }
+
+    pub fn get_mountinfo_fd(&mut self) -> Option<File> {
+        self.mountinfo_fd.take()
     }
 
     pub fn get_root_dir(&self) -> String {

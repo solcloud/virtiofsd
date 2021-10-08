@@ -360,6 +360,13 @@ pub struct Config {
     /// The default is `None`.
     pub proc_sfd_rawfd: Option<File>,
 
+    /// Optional `File` object for /proc/self/mountinfo.  Callers can open a `File` and pass it
+    /// here, so there is no need to open it in PassthroughFs::new().  This is especially useful
+    /// for sandboxing.
+    ///
+    /// The default is `None`.
+    pub proc_mountinfo_rawfd: Option<File>,
+
     /// Whether the file system should announce submounts to the guest.  Not doing so means that
     /// the FUSE client may see st_ino collisions: This stat field is passed through, so if the
     /// shared directory encompasses multiple mounts, some inodes (in different file systems) may
@@ -411,6 +418,7 @@ impl Default for Config {
             xattrmap: None,
             xattr_security_capability: None,
             proc_sfd_rawfd: None,
+            proc_mountinfo_rawfd: None,
             announce_submounts: false,
             inode_file_handles: false,
             readdirplus: true,
@@ -480,6 +488,17 @@ impl PassthroughFs {
             "/",
             libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )?;
+
+        #[allow(unused_variables)] // TODO: Remove once used
+        let mountinfo_fd = if let Some(fd) = cfg.proc_mountinfo_rawfd.take() {
+            fd
+        } else {
+            openat(
+                &libc::AT_FDCWD,
+                "/proc/self/mountinfo",
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )?
+        };
 
         // Check for statx() system call
         let use_statx = match statx(&proc_self_fd, None) {
