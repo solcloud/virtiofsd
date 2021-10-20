@@ -11,6 +11,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::sync::{Mutex, RwLock};
 
 const MAX_HANDLE_SZ: usize = 128;
+const EMPTY_CSTR: &[u8] = b"\0";
 
 /**
  * Creating a file handle only returns a mount ID; opening a file handle requires an open fd on the
@@ -143,6 +144,14 @@ impl FileHandle {
                 _ => Err(err),
             }
         }
+    }
+
+    /// Create a file handle for `fd`.
+    /// This is a wrapper around `from_name_at()` and so has the same interface.
+    pub fn from_fd(fd: &impl AsRawFd) -> io::Result<Option<Self>> {
+        // Safe because this is a constant value and a valid C string.
+        let empty_path = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
+        Self::from_name_at(fd, empty_path)
     }
 
     /**

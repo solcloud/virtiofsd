@@ -610,9 +610,7 @@ impl PassthroughFs {
         };
 
         let handle = if self.cfg.inode_file_handles {
-            // Safe because this is a constant value and a valid C string.
-            let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
-            FileHandle::from_name_at(&path_fd, empty)?
+            FileHandle::from_fd(&path_fd)?
         } else {
             None
         };
@@ -888,9 +886,7 @@ impl FileSystem for PassthroughFs {
         )?;
 
         let handle = if self.cfg.inode_file_handles {
-            // Safe because this is a constant value and a valid C string.
-            let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
-            FileHandle::from_name_at(&path_fd, empty)?
+            FileHandle::from_fd(&path_fd)?
         } else {
             None
         };
