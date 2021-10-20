@@ -603,18 +603,7 @@ impl PassthroughFs {
 
         let p_file = p.get_file(&self.mount_fds)?;
 
-        let handle = if self.cfg.inode_file_handles {
-            FileHandle::from_name_at_with_mount_fds(&p_file, name, &self.mount_fds, |fd, flags| {
-                reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-            })
-        } else {
-            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
-        };
-
-        // Ignore errors, because having a handle is optional
-        let file_or_handle = if let Ok(h) = handle {
-            FileOrHandle::Handle(h)
-        } else {
+        let path_fd = {
             // Safe because this doesn't modify any memory and we check the return value.
             let fd = unsafe {
                 libc::openat(
@@ -628,15 +617,33 @@ impl PassthroughFs {
             }
 
             // Safe because we just opened this fd.
-            FileOrHandle::File(unsafe { File::from_raw_fd(fd) })
+            unsafe { File::from_raw_fd(fd) }
+        };
+
+        let handle = if self.cfg.inode_file_handles {
+            // Safe because this is a constant value and a valid C string.
+            let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
+
+            FileHandle::from_name_at_with_mount_fds(
+                &path_fd,
+                empty,
+                &self.mount_fds,
+                |fd, flags| reopen_fd_through_proc(&fd, flags, &self.proc_self_fd),
+            )
+        } else {
+            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+        };
+
+        let st = self.stat(&path_fd, None)?;
+
+        // Ignore errors, because having a handle is optional
+        let file_or_handle = if let Ok(h) = handle {
+            FileOrHandle::Handle(h)
+        } else {
+            FileOrHandle::File(path_fd)
         };
 
         let mut attr_flags: u32 = 0;
-
-        let st = match &file_or_handle {
-            FileOrHandle::File(f) => self.stat(f, None)?,
-            FileOrHandle::Handle(_) => self.stat(&p_file, Some(name))?,
-        };
 
         if st.st.st_mode & libc::S_IFMT == libc::S_IFDIR
             && self.announce_submounts.load(Ordering::Relaxed)
@@ -881,21 +888,7 @@ impl FileSystem for PassthroughFs {
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         let root = CString::new(self.cfg.root_dir.as_str()).expect("CString::new failed");
 
-        let handle = if self.cfg.inode_file_handles {
-            FileHandle::from_name_at_with_mount_fds(
-                &libc::AT_FDCWD,
-                &root,
-                &self.mount_fds,
-                |fd, flags| reopen_fd_through_proc(&fd, flags, &self.proc_self_fd),
-            )
-        } else {
-            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
-        };
-
-        // Ignore errors, because having a handle is optional
-        let file_or_handle = if let Ok(h) = handle {
-            FileOrHandle::Handle(h)
-        } else {
+        let path_fd = {
             // Safe because this doesn't modify any memory and we check the return value.
             // We use `O_PATH` because we just want this for traversing the directory tree
             // and not for actually reading the contents.
@@ -911,12 +904,30 @@ impl FileSystem for PassthroughFs {
             }
 
             // Safe because we just opened this fd above.
-            FileOrHandle::File(unsafe { File::from_raw_fd(fd) })
+            unsafe { File::from_raw_fd(fd) }
         };
 
-        let st = match &file_or_handle {
-            FileOrHandle::File(f) => self.stat(f, None)?,
-            FileOrHandle::Handle(_) => self.stat(&libc::AT_FDCWD, Some(&root))?,
+        let handle = if self.cfg.inode_file_handles {
+            // Safe because this is a constant value and a valid C string.
+            let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
+
+            FileHandle::from_name_at_with_mount_fds(
+                &path_fd,
+                empty,
+                &self.mount_fds,
+                |fd, flags| reopen_fd_through_proc(&fd, flags, &self.proc_self_fd),
+            )
+        } else {
+            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+        };
+
+        let st = self.stat(&path_fd, None)?;
+
+        // Ignore errors, because having a handle is optional
+        let file_or_handle = if let Ok(h) = handle {
+            FileOrHandle::Handle(h)
+        } else {
+            FileOrHandle::File(path_fd)
         };
 
         // Safe because this doesn't modify any memory and there is no need to check the return
