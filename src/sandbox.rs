@@ -4,9 +4,9 @@
 
 use std::ffi::CString;
 use std::fmt;
-use std::fs;
+use std::fs::{self, File};
 use std::io;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::FromRawFd;
 use std::str::FromStr;
 
 use tempdir::TempDir;
@@ -99,8 +99,8 @@ pub struct Sandbox {
     /// The directory that is going to be shared with the VM. The sandbox will be constructed on top
     /// of this directory.
     shared_dir: String,
-    /// A file descriptor for `/proc/self/fd` obtained from the sandboxed context.
-    proc_self_fd: Option<RawFd>,
+    /// A `File` object for `/proc/self/fd` obtained from the sandboxed context.
+    proc_self_fd: Option<File>,
     /// Mechanism to be used for setting up the sandbox.
     sandbox_mode: SandboxMode,
     /// Value to set as RLIMIT_NOFILE
@@ -182,7 +182,8 @@ impl Sandbox {
         if proc_self_fd < 0 {
             return Err(Error::OpenProcSelfFd(std::io::Error::last_os_error()));
         }
-        self.proc_self_fd = Some(proc_self_fd);
+        // Safe because we just opened this fd.
+        self.proc_self_fd = Some(unsafe { File::from_raw_fd(proc_self_fd) });
 
         // Now that we have a file descriptor for `/proc/self/fd`, we no longer need the bind-mount.
         // Unmount it and remove the temporary directory.
@@ -357,7 +358,8 @@ impl Sandbox {
         if proc_self_fd < 0 {
             return Err(Error::OpenProcSelfFd(std::io::Error::last_os_error()));
         }
-        self.proc_self_fd = Some(proc_self_fd);
+        // Safe because we just opened this fd.
+        self.proc_self_fd = Some(unsafe { File::from_raw_fd(proc_self_fd) });
 
         let c_shared_dir = CString::new(self.shared_dir.clone()).unwrap();
         let ret = unsafe { libc::chroot(c_shared_dir.as_ptr()) };
@@ -386,8 +388,8 @@ impl Sandbox {
         }
     }
 
-    pub fn get_proc_self_fd(&self) -> Option<RawFd> {
-        self.proc_self_fd
+    pub fn get_proc_self_fd(&mut self) -> Option<File> {
+        self.proc_self_fd.take()
     }
 
     pub fn get_root_dir(&self) -> String {

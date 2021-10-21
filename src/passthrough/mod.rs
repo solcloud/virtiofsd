@@ -299,7 +299,7 @@ impl Default for CachePolicy {
 }
 
 /// Options that configure the behavior of the file system.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Config {
     /// How long the FUSE client should consider directory entries to be valid. If the contents of a
     /// directory can only be modified by the FUSE client (i.e., the file system has exclusive
@@ -353,12 +353,12 @@ pub struct Config {
     /// If the client's xattrmap did not remap "security.capability", this will be `None`.
     pub xattr_security_capability: Option<CString>,
 
-    /// Optional file descriptor for /proc/self/fd. Callers can obtain a file descriptor and pass it
-    /// here, so there's no need to open it in PassthroughFs::new(). This is specially useful for
+    /// Optional `File` object for /proc/self/fd. Callers can open a `File` and pass it here, so
+    /// there's no need to open it in PassthroughFs::new(). This is specially useful for
     /// sandboxing.
     ///
     /// The default is `None`.
-    pub proc_sfd_rawfd: Option<RawFd>,
+    pub proc_sfd_rawfd: Option<File>,
 
     /// Whether the file system should announce submounts to the guest.  Not doing so means that
     /// the FUSE client may see st_ino collisions: This stat field is passed through, so if the
@@ -464,10 +464,9 @@ pub struct PassthroughFs {
 }
 
 impl PassthroughFs {
-    pub fn new(cfg: Config) -> io::Result<PassthroughFs> {
-        let proc_self_fd = if let Some(fd) = cfg.proc_sfd_rawfd {
-            // Safe because this fd was provided by our caller
-            unsafe { File::from_raw_fd(fd) }
+    pub fn new(mut cfg: Config) -> io::Result<PassthroughFs> {
+        let proc_self_fd = if let Some(fd) = cfg.proc_sfd_rawfd.take() {
+            fd
         } else {
             openat(
                 &libc::AT_FDCWD,
