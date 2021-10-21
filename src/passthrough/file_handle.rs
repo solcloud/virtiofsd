@@ -102,7 +102,15 @@ impl MountFds {
 
 impl FileHandle {
     /// Create a file handle for the given file.
-    pub fn from_name_at(dir: &impl AsRawFd, path: &CStr) -> io::Result<Self> {
+    ///
+    /// Return `Ok(None)` if no file handle can be generated for this file: Either because the
+    /// filesystem does not support it, or because it would require a larger file handle than we
+    /// can store.  These are not intermittent failures, i.e. if this function returns `Ok(None)`
+    /// for a specific file, it will always return `Ok(None)` for it.  Conversely, if this function
+    /// returns `Ok(Some)` at some point, it will never return `Ok(None)` later.
+    ///
+    /// Return an `io::Error` for all other errors.
+    pub fn from_name_at(dir: &impl AsRawFd, path: &CStr) -> io::Result<Option<Self>> {
         let mut mount_id: libc::c_int = 0;
         let mut c_fh = CFileHandle {
             handle_bytes: MAX_HANDLE_SZ as libc::c_uint,
@@ -120,12 +128,20 @@ impl FileHandle {
             )
         };
         if ret == 0 {
-            Ok(FileHandle {
+            Ok(Some(FileHandle {
                 mnt_id: mount_id as u64,
                 handle: c_fh,
-            })
+            }))
         } else {
-            Err(io::Error::last_os_error())
+            let err = io::Error::last_os_error();
+            match err.raw_os_error() {
+                // Filesystem does not support file handles
+                Some(libc::EOPNOTSUPP) => Ok(None),
+                // Handle would need more bytes than `MAX_HANDLE_SZ`
+                Some(libc::EOVERFLOW) => Ok(None),
+                // Other error
+                _ => Err(err),
+            }
         }
     }
 
