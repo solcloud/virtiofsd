@@ -610,24 +610,7 @@ impl PassthroughFs {
             None
         };
 
-        let openable_handle = handle
-            .as_ref()
-            .map(|h| {
-                h.to_openable(&self.mount_fds, |fd, flags| {
-                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                })
-                .ok() // Ignore errors, because having a handle is optional
-            })
-            .flatten();
-
         let st = self.stat(&path_fd, None)?;
-
-        // Ignore errors, because having a handle is optional
-        let file_or_handle = if let Some(h) = openable_handle {
-            FileOrHandle::Handle(h)
-        } else {
-            FileOrHandle::File(path_fd)
-        };
 
         let mut attr_flags: u32 = 0;
 
@@ -676,6 +659,23 @@ impl PassthroughFs {
             data.refcount.fetch_add(1, Ordering::Acquire);
             data.inode
         } else {
+            let openable_handle = handle
+                .as_ref()
+                .map(|h| {
+                    h.to_openable(&self.mount_fds, |fd, flags| {
+                        reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+                    })
+                    .ok() // Ignore errors, because having a handle is optional
+                })
+                .flatten();
+
+            // Ignore errors, because having a handle is optional
+            let file_or_handle = if let Some(h) = openable_handle {
+                FileOrHandle::Handle(h)
+            } else {
+                FileOrHandle::File(path_fd)
+            };
+
             // There is a possible race here where 2 threads end up adding the same file
             // into the inode list.  However, since each of those will get a unique Inode
             // value and unique file descriptors this shouldn't be that much of a problem.
