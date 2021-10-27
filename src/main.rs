@@ -721,6 +721,7 @@ fn main() {
             xattr,
             xattrmap,
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
+            proc_mountinfo_rawfd: sandbox.get_mountinfo_fd(),
             announce_submounts: opt.announce_submounts,
             inode_file_handles: opt.inode_file_handles,
             readdirplus,
