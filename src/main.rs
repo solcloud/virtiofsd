@@ -7,16 +7,12 @@ use libc::EFD_NONBLOCK;
 use log::*;
 use passthrough::xattrmap::XattrMap;
 use seccomp::SeccompAction;
-use std::{
-    convert::{self, TryFrom},
-    env, error,
-    ffi::CString,
-    fmt, io,
-    os::unix::io::{FromRawFd, RawFd},
-    process,
-    str::FromStr,
-    sync::{Arc, Mutex, RwLock},
-};
+use std::convert::{self, TryFrom};
+use std::ffi::CString;
+use std::os::unix::io::{FromRawFd, RawFd};
+use std::str::FromStr;
+use std::sync::{Arc, Mutex, RwLock};
+use std::{env, error, fmt, io, process};
 
 use structopt::StructOpt;
 
@@ -30,8 +26,7 @@ use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use virtio_queue::DescriptorChain;
-use virtiofsd_rs::descriptor_utils::Error as VufDescriptorError;
-use virtiofsd_rs::descriptor_utils::{Reader, Writer};
+use virtiofsd_rs::descriptor_utils::{Error as VufDescriptorError, Reader, Writer};
 use virtiofsd_rs::filesystem::FileSystem;
 use virtiofsd_rs::passthrough::{self, CachePolicy, PassthroughFs};
 use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
