@@ -3,11 +3,10 @@
 // found in the LICENSE file.
 
 use std::ffi::CString;
-use std::fmt;
 use std::fs::{self, File};
-use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::str::FromStr;
+use std::{fmt, io};
 
 use tempdir::TempDir;
 

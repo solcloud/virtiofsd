@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use std::cmp;
 use std::collections::VecDeque;
 use std::fmt::{self, Display};
 use std::io::{self, Read, Write};
 use std::mem::{size_of, MaybeUninit};
 use std::ops::Deref;
 use std::ptr::copy_nonoverlapping;
-use std::result;
+use std::{cmp, result};
 
 use virtio_queue::DescriptorChain;
 use vm_memory::{

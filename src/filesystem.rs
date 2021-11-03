@@ -5,18 +5,13 @@
 use std::convert::TryInto;
 use std::ffi::CStr;
 use std::fs::File;
-use std::io;
-use std::mem;
 use std::time::Duration;
+use std::{io, mem};
 
 use crate::fuse;
 
 use super::fs_cache_req_handler::FsCacheReqHandler;
-pub use fuse::FsOptions;
-pub use fuse::OpenOptions;
-pub use fuse::RemovemappingOne;
-pub use fuse::SetattrValid;
-pub use fuse::ROOT_ID;
+pub use fuse::{FsOptions, OpenOptions, RemovemappingOne, SetattrValid, ROOT_ID};
 
 /// Information about a path in the filesystem.
 pub struct Entry {
