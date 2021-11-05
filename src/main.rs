@@ -649,12 +649,12 @@ fn drop_child_capabilities(inode_file_handles: bool) {
         capng::Type::PERMITTED | capng::Type::EFFECTIVE,
         required_caps,
     ) {
-        error!("warning: can't set up the child capabilities: {}", e);
-        process::exit(-1);
+        error!("can't set up the child capabilities: {}", e);
+        process::exit(1);
     }
     if let Err(e) = capng::apply(capng::Set::BOTH) {
-        error!("warning: can't apply the child capabilities: {}", e);
-        process::exit(-1);
+        error!("can't apply the child capabilities: {}", e);
+        process::exit(1);
     }
 }
 

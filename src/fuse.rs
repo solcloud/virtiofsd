@@ -28,6 +28,7 @@ const FATTR_ATIME_NOW: u32 = 128;
 const FATTR_MTIME_NOW: u32 = 256;
 pub const FATTR_LOCKOWNER: u32 = 512;
 const FATTR_CTIME: u32 = 1024;
+const FATTR_KILL_SUIDGID: u32 = 2048;
 
 bitflags! {
     pub struct SetattrValid: u32 {
@@ -40,6 +41,7 @@ bitflags! {
         const ATIME_NOW = FATTR_ATIME_NOW;
         const MTIME_NOW = FATTR_MTIME_NOW;
         const CTIME = FATTR_CTIME;
+        const KILL_SUIDGID = FATTR_KILL_SUIDGID;
     }
 }
 
@@ -150,6 +152,9 @@ const EXPLICIT_INVAL_DATA: u32 = 33_554_432;
 
 /// Kernel supports auto-mounting directory submounts
 const SUBMOUNTS: u32 = 134_217_728;
+
+/// Fs handles killing suid/sgid/cap on write/chown/trunc (v2).
+const HANDLE_KILLPRIV_V2: u32 = 268_435_456;
 
 bitflags! {
     /// A bitfield passed in as a parameter to and returned from the `init` method of the
@@ -360,6 +365,21 @@ bitflags! {
         /// Setting (or not setting) this flag in the `FsOptions` returned from the `init` method
         /// has no effect.
         const SUBMOUNTS = SUBMOUNTS;
+
+        /// Indicates that the filesystem is responsible for clearing
+        /// security.capability xattr and clearing setuid and setgid bits. Following
+        /// are the rules.
+        /// - clear "security.capability" on write, truncate and chown unconditionally
+        /// - clear suid/sgid if following is true. Note, sgid is cleared only if
+        ///   group executable bit is set.
+        ///    o setattr has FATTR_SIZE and FATTR_KILL_SUIDGID set.
+        ///    o setattr has FATTR_UID or FATTR_GID
+        ///    o open has O_TRUNC and FUSE_OPEN_KILL_SUIDGID
+        ///    o create has O_TRUNC and FUSE_OPEN_KILL_SUIDGID flag set.
+        ///    o write has FUSE_WRITE_KILL_SUIDGID
+        ///
+        /// This feature is enabled by default if supported by the kernel.
+        const HANDLE_KILLPRIV_V2 = HANDLE_KILLPRIV_V2;
     }
 }
 
@@ -453,6 +473,9 @@ pub const FUSE_COMPAT_22_INIT_OUT_SIZE: u32 = 24;
 
 /// Object is a submount root
 pub const ATTR_SUBMOUNT: u32 = 1;
+
+/// Kill suid and sgid if executable
+pub const OPEN_KILL_SUIDGID: u32 = 1;
 
 // Message definitions follow.  It is safe to implement ByteValued for all of these
 // because they are POD types.
@@ -754,7 +777,7 @@ impl From<SetattrIn> for libc::stat64 {
 #[derive(Debug, Default, Copy, Clone)]
 pub struct OpenIn {
     pub flags: u32,
-    pub unused: u32,
+    pub open_flags: u32,
 }
 unsafe impl ByteValued for OpenIn {}
 
@@ -764,7 +787,7 @@ pub struct CreateIn {
     pub flags: u32,
     pub mode: u32,
     pub umask: u32,
-    pub padding: u32,
+    pub open_flags: u32,
 }
 unsafe impl ByteValued for CreateIn {}
 

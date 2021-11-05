@@ -239,8 +239,79 @@ fn set_creds(
     ScopedGid::new(gid).and_then(|gid| Ok((ScopedUid::new(uid)?, gid)))
 }
 
+struct ScopedCaps {
+    cap: capng::Capability,
+}
+
+impl ScopedCaps {
+    fn new(cap_name: &str) -> io::Result<Option<Self>> {
+        use capng::{Action, CUpdate, Set, Type};
+
+        let cap = capng::name_to_capability(cap_name).map_err(|_| {
+            let err = io::Error::last_os_error();
+            error!(
+                "couldn't get the capability id for name {}: {:?}",
+                cap_name, err
+            );
+            err
+        })?;
+
+        if capng::have_capability(Type::EFFECTIVE, cap) {
+            let req = vec![CUpdate {
+                action: Action::DROP,
+                cap_type: Type::EFFECTIVE,
+                capability: cap,
+            }];
+            capng::update(req).map_err(|e| {
+                error!("couldn't drop {} capability: {:?}", cap, e);
+                einval()
+            })?;
+            capng::apply(Set::CAPS).map_err(|e| {
+                error!(
+                    "couldn't apply capabilities after dropping {}: {:?}",
+                    cap, e
+                );
+                einval()
+            })?;
+            Ok(Some(Self { cap }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl Drop for ScopedCaps {
+    fn drop(&mut self) {
+        use capng::{Action, CUpdate, Set, Type};
+
+        let req = vec![CUpdate {
+            action: Action::ADD,
+            cap_type: Type::EFFECTIVE,
+            capability: self.cap,
+        }];
+
+        if let Err(e) = capng::update(req) {
+            panic!("couldn't restore {} capability: {:?}", self.cap, e);
+        }
+        if let Err(e) = capng::apply(Set::CAPS) {
+            panic!(
+                "couldn't apply capabilities after restoring {}: {:?}",
+                self.cap, e
+            );
+        }
+    }
+}
+
+fn drop_effective_cap(cap_name: &str) -> io::Result<Option<ScopedCaps>> {
+    ScopedCaps::new(cap_name)
+}
+
 fn ebadf() -> io::Error {
     io::Error::from_raw_os_error(libc::EBADF)
+}
+
+fn einval() -> io::Error {
+    io::Error::from_raw_os_error(libc::EINVAL)
 }
 
 /// The caching policy that the file system should report to the FUSE client. By default the FUSE
@@ -710,8 +781,20 @@ impl PassthroughFs {
         })
     }
 
-    fn do_open(&self, inode: Inode, flags: u32) -> io::Result<(Option<Handle>, OpenOptions)> {
-        let file = RwLock::new(self.open_inode(inode, flags as i32)?);
+    fn do_open(
+        &self,
+        inode: Inode,
+        kill_priv: bool,
+        flags: u32,
+    ) -> io::Result<(Option<Handle>, OpenOptions)> {
+        let file = RwLock::new({
+            let _killpriv_guard = if kill_priv {
+                drop_effective_cap("FSETID")?
+            } else {
+                None
+            };
+            self.open_inode(inode, flags as i32)?
+        });
 
         if flags & (libc::O_TRUNC as u32) != 0 {
             let file = file.read().expect("poisoned lock");
@@ -1005,7 +1088,7 @@ impl FileSystem for PassthroughFs {
         inode: Inode,
         flags: u32,
     ) -> io::Result<(Option<Handle>, OpenOptions)> {
-        self.do_open(inode, flags | (libc::O_DIRECTORY as u32))
+        self.do_open(inode, false, flags | (libc::O_DIRECTORY as u32))
     }
 
     fn releasedir(
@@ -1080,9 +1163,10 @@ impl FileSystem for PassthroughFs {
         &self,
         _ctx: Context,
         inode: Inode,
+        kill_priv: bool,
         flags: u32,
     ) -> io::Result<(Option<Handle>, OpenOptions)> {
-        self.do_open(inode, flags)
+        self.do_open(inode, kill_priv, flags)
     }
 
     fn release(
@@ -1104,6 +1188,7 @@ impl FileSystem for PassthroughFs {
         parent: Inode,
         name: &CStr,
         mode: u32,
+        kill_priv: bool,
         flags: u32,
         umask: u32,
     ) -> io::Result<(Entry, Option<Handle>, OpenOptions)> {
@@ -1153,7 +1238,7 @@ impl FileSystem for PassthroughFs {
             }
 
             let entry = self.do_lookup(parent, name)?;
-            let (handle, _) = self.do_open(entry.inode, flags)?;
+            let (handle, _) = self.do_open(entry.inode, kill_priv, flags)?;
             let handle = handle.ok_or_else(ebadf)?;
 
             (entry, handle)
@@ -1244,7 +1329,7 @@ impl FileSystem for PassthroughFs {
 
     fn write<R: io::Read + ZeroCopyReader>(
         &self,
-        ctx: Context,
+        _ctx: Context,
         inode: Inode,
         handle: Handle,
         mut r: R,
@@ -1263,10 +1348,10 @@ impl FileSystem for PassthroughFs {
 
         {
             let _killpriv_guard = if kill_priv {
-                // We need to change credentials during a write so that the kernel will remove
-                // setuid or setgid bits from the file if it was written to by someone other than
-                // the owner.
-                Some(set_creds(ctx.uid, ctx.gid)?)
+                // We need to drop FSETID during a write so that the kernel will remove setuid
+                // or setgid bits from the file if it was written to by someone other than the
+                // owner.
+                drop_effective_cap("FSETID")?
             } else {
                 None
             };
@@ -1384,6 +1469,12 @@ impl FileSystem for PassthroughFs {
                     assert!(rdwr_inode_file);
                     inode_file.as_raw_fd()
                 }
+            };
+
+            let _killpriv_guard = if valid.contains(SetattrValid::KILL_SUIDGID) {
+                drop_effective_cap("FSETID")?
+            } else {
+                None
             };
 
             // Safe because this doesn't modify any memory and we check the return value.
