@@ -730,11 +730,11 @@ fn main() {
     }
 
     if opt.inode_file_handles {
-        use caps::{CapSet, Capability};
-
         // --inode-file-handles requires CAP_DAC_READ_SEARCH.  Check it here to save the user some
         // head-scratching due to getting nothing but EPERMs after mounting.
-        match caps::has_cap(None, CapSet::Effective, Capability::CAP_DAC_READ_SEARCH) {
+        match capng::name_to_capability("DAC_READ_SEARCH")
+            .map(|cap| capng::have_capability(capng::Type::EFFECTIVE, cap))
+        {
             // Perfect, we have CAP_DAC_READ_SEARCH
             Ok(true) => (),
 
