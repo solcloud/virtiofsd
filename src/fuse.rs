@@ -300,7 +300,7 @@ bitflags! {
         /// Indicates that the file system is responsible for unsetting setuid and setgid bits when a
         /// file is written, truncated, or its owner is changed.
         ///
-        /// This feature is enabled by default when supported by the kernel.
+        /// This feature is not currently supported.
         const HANDLE_KILLPRIV = HANDLE_KILLPRIV;
 
         /// Indicates support for POSIX ACLs.
