@@ -1545,20 +1545,20 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        // Safe because this is a constant value and a valid C string.
-        let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
-
         let inode_file = data.get_file()?;
         let newparent_file = new_inode.get_file()?;
+
+        let procname = CString::new(format!("{}", inode_file.as_raw_fd()))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
             libc::linkat(
-                inode_file.as_raw_fd(),
-                empty.as_ptr(),
+                self.proc_self_fd.as_raw_fd(),
+                procname.as_ptr(),
                 newparent_file.as_raw_fd(),
                 newname.as_ptr(),
-                libc::AT_EMPTY_PATH,
+                libc::AT_SYMLINK_FOLLOW,
             )
         };
         if res == 0 {
