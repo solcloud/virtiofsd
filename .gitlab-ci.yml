@@ -18,6 +18,8 @@ fmt:
     - cargo fmt -v -- --check
 
 test:
+  before_script:
+    - apt-get -qq update && apt-get -qq install -y libseccomp-dev
   script:
     - rustc --version && cargo --version  # Print version info for debugging
     - cargo build --verbose
@@ -35,6 +37,8 @@ test:
 #
 # This only runs when code is merged to the 'main' branch.
 publish:
+  before_script:
+    - apt-get -qq update && apt-get -qq install -y libseccomp-dev
   script:
     - cargo build --verbose
     - cargo test --verbose
