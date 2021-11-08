@@ -19,7 +19,7 @@ fmt:
 
 test:
   before_script:
-    - apt-get -qq update && apt-get -qq install -y libseccomp-dev
+    - apt-get -qq update && apt-get -qq install -y libseccomp-dev libcap-ng-dev
   script:
     - rustc --version && cargo --version  # Print version info for debugging
     - cargo build --verbose
@@ -38,7 +38,7 @@ test:
 # This only runs when code is merged to the 'main' branch.
 publish:
   before_script:
-    - apt-get -qq update && apt-get -qq install -y libseccomp-dev
+    - apt-get -qq update && apt-get -qq install -y libseccomp-dev libcap-ng-dev
   script:
     - cargo build --verbose
     - cargo test --verbose
