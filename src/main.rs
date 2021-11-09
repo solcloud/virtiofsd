@@ -6,7 +6,6 @@ use futures::executor::{ThreadPool, ThreadPoolBuilder};
 use libc::EFD_NONBLOCK;
 use log::*;
 use passthrough::xattrmap::XattrMap;
-use seccomp::SeccompAction;
 use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
@@ -30,7 +29,7 @@ use virtiofsd_rs::descriptor_utils::{Error as VufDescriptorError, Reader, Writer
 use virtiofsd_rs::filesystem::FileSystem;
 use virtiofsd_rs::passthrough::{self, CachePolicy, PassthroughFs};
 use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
-use virtiofsd_rs::seccomp::enable_seccomp;
+use virtiofsd_rs::seccomp::{enable_seccomp, SeccompAction};
 use virtiofsd_rs::server::Server;
 use virtiofsd_rs::Error as VhostUserFsError;
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
@@ -449,7 +448,6 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
     Ok(match src {
         "none" => SeccompAction::Allow, // i.e. no seccomp
         "kill" => SeccompAction::Kill,
-        "log" => SeccompAction::Log,
         "trap" => SeccompAction::Trap,
         _ => return Err("Matching variant not found"),
     })
@@ -637,7 +635,6 @@ fn main() {
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
     let xattr = if xattrmap.is_some() { true } else { opt.xattr };
-    let seccomp_mode = opt.seccomp.clone();
     let thread_pool_size = opt.thread_pool_size;
     let readdirplus = match opt.cache {
         CachePolicy::Never => false,
@@ -727,9 +724,10 @@ fn main() {
     };
 
     // Must happen before we start the thread pool
-    if seccomp_mode != SeccompAction::Allow {
-        enable_seccomp(seccomp_mode).unwrap();
-    };
+    match opt.seccomp {
+        SeccompAction::Allow => {}
+        _ => enable_seccomp(opt.seccomp).unwrap(),
+    }
 
     if opt.inode_file_handles {
         use caps::{CapSet, Capability};
