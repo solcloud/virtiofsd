@@ -615,6 +615,49 @@ fn initialize_logging(log_level: &LogLevel) {
     env_logger::init();
 }
 
+fn drop_parent_capabilities() {
+    // The parent doesn't require any capabilities, as it'd be just waiting for
+    // the child to exit.
+    capng::clear(capng::Set::BOTH);
+    if let Err(e) = capng::apply(capng::Set::BOTH) {
+        // Don't exit the process here since we already have a child.
+        error!("warning: can't apply the parent capabilities: {}", e);
+    }
+}
+
+fn drop_child_capabilities(inode_file_handles: bool) {
+    let mut required_caps = vec![
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "FSETID",
+        "SETGID",
+        "SETUID",
+        "MKNOD",
+        "SETFCAP",
+    ];
+
+    if inode_file_handles {
+        required_caps.push("DAC_READ_SEARCH");
+    }
+
+    capng::clear(capng::Set::BOTH);
+    // Configure the required set of capabilities for the child, and leave the
+    // parent with none.
+    if let Err(e) = capng::updatev(
+        capng::Action::ADD,
+        capng::Type::PERMITTED | capng::Type::EFFECTIVE,
+        required_caps,
+    ) {
+        error!("can't set up the child capabilities: {}", e);
+        process::exit(1);
+    }
+    if let Err(e) = capng::apply(capng::Set::BOTH) {
+        error!("can't apply the child capabilities: {}", e);
+        process::exit(1);
+    }
+}
+
 fn main() {
     let opt = parse_compat(Opt::from_args()).expect("invalid compat argument");
 
@@ -704,6 +747,7 @@ fn main() {
     let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile);
     let fs_cfg = match sandbox.enter().unwrap() {
         Some(child_pid) => {
+            drop_parent_capabilities();
             unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
             return;
         }
@@ -729,32 +773,7 @@ fn main() {
         _ => enable_seccomp(opt.seccomp).unwrap(),
     }
 
-    if opt.inode_file_handles {
-        use caps::{CapSet, Capability};
-
-        // --inode-file-handles requires CAP_DAC_READ_SEARCH.  Check it here to save the user some
-        // head-scratching due to getting nothing but EPERMs after mounting.
-        match caps::has_cap(None, CapSet::Effective, Capability::CAP_DAC_READ_SEARCH) {
-            // Perfect, we have CAP_DAC_READ_SEARCH
-            Ok(true) => (),
-
-            // We do not have CAP_DAC_READ_SEARCH, error out
-            Ok(false) => {
-                eprintln!(
-                    "error: --inode-file-handles requires the cap_dac_read_search capability, \
-                            which virtiofsd-rs does not have"
-                );
-                process::exit(1);
-            }
-
-            // We do not know, so print a warning but do not exit
-            Err(e) => eprintln!(
-                "warning: --inode-file-handles requires the cap_dac_read_search capability, \
-                        but inquiring virtiofsd-rs's set of capabilities failed: {}",
-                e
-            ),
-        }
-    }
+    drop_child_capabilities(opt.inode_file_handles);
 
     let fs = PassthroughFs::new(fs_cfg).unwrap();
     let fs_backend = Arc::new(RwLock::new(

@@ -610,6 +610,9 @@ pub trait FileSystem {
     /// The returned `OpenOptions` allow the file system to change the way the opened file is
     /// handled by the kernel. See the documentation of `OpenOptions` for more information.
     ///
+    /// If `kill_priv` is true then it indicates that the file system is expected to clear the
+    /// setuid and setgid bits.
+    ///
     /// If the `FsOptions::ZERO_MESSAGE_OPEN` feature is enabled by both the file system
     /// implementation and the kernel, then the file system may return an error of `ENOSYS`. This
     /// will be interpreted by the kernel as success and future calls to `open` and `release` will
@@ -618,6 +621,7 @@ pub trait FileSystem {
         &self,
         ctx: Context,
         inode: Self::Inode,
+        kill_priv: bool,
         flags: u32,
     ) -> io::Result<(Option<Self::Handle>, OpenOptions)> {
         // Matches the behavior of libfuse.
@@ -630,6 +634,9 @@ pub trait FileSystem {
     /// `mode`. When the `FsOptions::DONT_MASK` feature is set, the file system is responsible for
     /// setting the permissions of the created file to `mode & !umask`.
     ///
+    /// If `kill_priv` is true then it indicates that the file system is expected to clear the
+    /// setuid and setgid bits.
+    ///
     /// If the file system returns an `ENOSYS` error, then the kernel will treat this method as
     /// unimplemented and all future calls to `create` will be handled by calling the `mknod` and
     /// `open` methods instead.
@@ -638,12 +645,14 @@ pub trait FileSystem {
     /// addition to the optional `Handle` and the `OpenOptions`, the file system must also return an
     /// `Entry` for the file. This increases the lookup count for the `Inode` associated with the
     /// file by 1.
+    #[allow(clippy::too_many_arguments)]
     fn create(
         &self,
         ctx: Context,
         parent: Self::Inode,
         name: &CStr,
         mode: u32,
+        kill_priv: bool,
         flags: u32,
         umask: u32,
     ) -> io::Result<(Entry, Option<Self::Handle>, OpenOptions)> {
