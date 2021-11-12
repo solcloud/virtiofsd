@@ -66,6 +66,7 @@ pub fn enable_seccomp(action: SeccompAction) -> Result<(), Error> {
     allow_syscall!(ctx, libc::SYS_capset);
     allow_syscall!(ctx, libc::SYS_clock_gettime);
     allow_syscall!(ctx, libc::SYS_clone);
+    allow_syscall!(ctx, libc::SYS_clone3);
     allow_syscall!(ctx, libc::SYS_close);
     allow_syscall!(ctx, libc::SYS_copy_file_range);
     allow_syscall!(ctx, libc::SYS_dup);
