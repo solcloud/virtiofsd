@@ -51,9 +51,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "capng"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16c1f00188f4f11a910d244e35cef4fbc3a6643c370bbfa446cee8ab5a624a8c"
+checksum = "3ec61caf90f9faf934ea48e385a00f5a80b31b1cd14de15f1bc4b6b79eca00b8"
 dependencies = [
  "bitflags",
  "libc",
