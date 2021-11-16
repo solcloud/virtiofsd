@@ -95,10 +95,8 @@ pub fn enable_seccomp(action: SeccompAction) -> Result<(), Error> {
     allow_syscall!(ctx, libc::SYS_fstat);
     #[cfg(target_arch = "s390x")]
     allow_syscall!(ctx, libc::SYS_fstatfs64);
-    #[cfg(any(target_arch = "x86_64", target_arch = "s390x"))]
     allow_syscall!(ctx, libc::SYS_fstatfs);
     allow_syscall!(ctx, libc::SYS_fsync);
-    #[cfg(any(target_arch = "x86_64", target_arch = "s390x"))]
     allow_syscall!(ctx, libc::SYS_ftruncate);
     allow_syscall!(ctx, libc::SYS_futex);
     #[cfg(any(target_arch = "x86_64", target_arch = "s390x"))]
