@@ -155,7 +155,7 @@ impl<'a> DescriptorChainConsumer<'a> {
                 // its `size` value in the call to `position` above.
                 let front = other.pop_front().expect("empty VecDeque after split");
                 self.buffers
-                    .push_back(front.offset(rem).map_err(Error::VolatileMemoryError)?);
+                    .push_back(front.subslice(0, rem).map_err(Error::VolatileMemoryError)?);
                 other.push_front(front.offset(rem).map_err(Error::VolatileMemoryError)?);
             }
 
