@@ -498,9 +498,21 @@ struct virtq_desc {
 // Safe because it only has data and has no implicit padding.
 unsafe impl ByteValued for virtq_desc {}
 
+#[derive(Copy, Clone, Debug, Default)]
+#[repr(C)]
+struct virtq_avail {
+    flags: Le16,
+    idx: Le16,
+    ring: Le16,
+}
+
+// Safe because it only has data and has no implicit padding.
+unsafe impl ByteValued for virtq_avail {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use virtio_queue::Queue;
     use vm_memory::{Bytes, GuestAddress};
 
     const VIRTQ_DESC_F_NEXT: u16 = 0x1;
@@ -545,16 +557,26 @@ mod tests {
             );
         }
 
-        // FIXME: https://gitlab.com/virtio-fs/virtiofsd-rs/-/issues/1
-        todo!()
-        /*
-        DescriptorChain::checked_new(memory, descriptor_array_addr, 0x100, 0, None)
-            .ok_or(Error::InvalidChain)
-        */
+        let avail_ring = descriptor_array_addr
+            .checked_add(
+                u64::from(descriptors_len as u16) * std::mem::size_of::<virtq_desc>() as u64,
+            )
+            .ok_or(Error::InvalidChain)?;
+        let avail = virtq_avail {
+            flags: 0.into(),
+            idx: 1.into(),
+            ring: 0.into(),
+        };
+        let _ = memory.write_obj(avail, avail_ring);
+
+        let mut queue = Queue::new(GuestMemoryAtomic::new(memory.clone()), u16::MAX);
+        queue.desc_table = descriptor_array_addr;
+        queue.avail_ring = avail_ring;
+        let desc = queue.iter().unwrap().next().unwrap();
+        Ok(desc.clone())
     }
 
     #[test]
-    #[ignore]
     fn reader_test_simple_chain() {
         use DescriptorType::*;
 
@@ -596,7 +618,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn writer_test_simple_chain() {
         use DescriptorType::*;
 
@@ -638,7 +659,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn reader_test_incompatible_chain() {
         use DescriptorType::*;
 
@@ -664,7 +684,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn writer_test_incompatible_chain() {
         use DescriptorType::*;
 
@@ -690,7 +709,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn reader_writer_shared_chain() {
         use DescriptorType::*;
 
@@ -739,7 +757,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn reader_writer_shattered_object() {
         use DescriptorType::*;
 
@@ -779,7 +796,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn reader_unexpected_eof() {
         use DescriptorType::*;
 
@@ -809,7 +825,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn split_border() {
         use DescriptorType::*;
 
@@ -839,7 +854,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn split_middle() {
         use DescriptorType::*;
 
@@ -869,7 +883,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn split_end() {
         use DescriptorType::*;
 
@@ -899,7 +912,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn split_beginning() {
         use DescriptorType::*;
 
@@ -929,7 +941,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn split_outofbounds() {
         use DescriptorType::*;
 
@@ -959,7 +970,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn read_full() {
         use DescriptorType::*;
 
@@ -984,7 +994,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn write_full() {
         use DescriptorType::*;
 
