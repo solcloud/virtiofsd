@@ -551,7 +551,7 @@ impl PassthroughFs {
             openat(
                 &libc::AT_FDCWD,
                 "/proc/self/mountinfo",
-                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )?
         };
 
