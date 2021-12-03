@@ -12,8 +12,8 @@ use std::{cmp, result};
 
 use virtio_queue::DescriptorChain;
 use vm_memory::{
-    Address, ByteValued, GuestMemory, GuestMemoryAtomic, GuestMemoryError, GuestMemoryMmap,
-    GuestMemoryRegion, Le16, Le32, Le64, VolatileMemory, VolatileMemoryError, VolatileSlice,
+    Address, ByteValued, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion, Le16,
+    Le32, Le64, VolatileMemory, VolatileMemoryError, VolatileSlice,
 };
 
 use crate::file_traits::{FileReadWriteAtVolatile, FileReadWriteVolatile};
@@ -188,10 +188,11 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     /// Construct a new Reader wrapper over `desc_chain`.
-    pub fn new(
-        mem: &'a GuestMemoryMmap,
-        desc_chain: DescriptorChain<GuestMemoryAtomic<GuestMemoryMmap>>,
-    ) -> Result<Reader<'a>> {
+    pub fn new<M>(mem: &'a GuestMemoryMmap, desc_chain: DescriptorChain<M>) -> Result<Reader<'a>>
+    where
+        M: Deref,
+        M::Target: GuestMemory + Sized,
+    {
         let mut total_len: usize = 0;
         let buffers = desc_chain
             .readable()
@@ -344,10 +345,11 @@ pub struct Writer<'a> {
 
 impl<'a> Writer<'a> {
     /// Construct a new Writer wrapper over `desc_chain`.
-    pub fn new(
-        mem: &'a GuestMemoryMmap,
-        desc_chain: DescriptorChain<GuestMemoryAtomic<GuestMemoryMmap>>,
-    ) -> Result<Writer<'a>> {
+    pub fn new<M>(mem: &'a GuestMemoryMmap, desc_chain: DescriptorChain<M>) -> Result<Writer<'a>>
+    where
+        M: Deref,
+        M::Target: GuestMemory + Sized,
+    {
         let mut total_len: usize = 0;
         let buffers = desc_chain
             .writable()
@@ -512,8 +514,8 @@ unsafe impl ByteValued for virtq_avail {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use virtio_queue::Queue;
-    use vm_memory::{Bytes, GuestAddress};
+    use virtio_queue::{Queue, QueueState};
+    use vm_memory::{Bytes, GuestAddress, GuestMemoryAtomic, GuestMemoryLoadGuard};
 
     const VIRTQ_DESC_F_NEXT: u16 = 0x1;
     const VIRTQ_DESC_F_WRITE: u16 = 0x2;
@@ -525,7 +527,7 @@ mod tests {
         mut buffers_start_addr: GuestAddress,
         descriptors: Vec<(DescriptorType, u32)>,
         spaces_between_regions: u32,
-    ) -> Result<DescriptorChain<GuestMemoryAtomic<GuestMemoryMmap>>> {
+    ) -> Result<DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap>>> {
         let descriptors_len = descriptors.len();
         for (index, (type_, size)) in descriptors.into_iter().enumerate() {
             let mut flags = 0;
@@ -569,9 +571,10 @@ mod tests {
         };
         let _ = memory.write_obj(avail, avail_ring);
 
-        let mut queue = Queue::new(GuestMemoryAtomic::new(memory.clone()), u16::MAX);
-        queue.desc_table = descriptor_array_addr;
-        queue.avail_ring = avail_ring;
+        let mut queue: Queue<GuestMemoryAtomic<GuestMemoryMmap>, QueueState> =
+            Queue::new(GuestMemoryAtomic::new(memory.clone()), u16::MAX);
+        queue.state.desc_table = descriptor_array_addr;
+        queue.state.avail_ring = avail_ring;
         let desc = queue.iter().unwrap().next().unwrap();
         Ok(desc.clone())
     }

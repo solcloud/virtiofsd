@@ -15,7 +15,6 @@ exclude = [".gitlab-ci.yml"]
 bitflags = "1.2"
 capng = "0.2.0"
 env_logger = "0.8.4"
-epoll = "4.3"
 futures = { version = "0.3", features = ["thread-pool"] }
 libc = "~0.2.87"
 log = "0.4"
@@ -23,11 +22,11 @@ log = "0.4"
 seccomp-sys = "0.1.3"
 structopt = "0.3"
 tempdir = "0.3"
-vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend", rev = "3242b37" }
+vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend", rev = "264d46d" }
 vhost = "0.2"
 virtio-bindings = { version = "0.1", features = ["virtio-v5_0_0"] }
-vm-memory = "0.6"
-virtio-queue = { git = "https://github.com/rust-vmm/vm-virtio", rev = "6013dd9" }
+vm-memory = { version = "0.7", features = ["backend-mmap"] }
+virtio-queue = { git = "https://github.com/rust-vmm/vm-virtio", rev = "cc1fa35" }
 vmm-sys-util = "0.9"
 
 [profile.release]

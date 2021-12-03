@@ -32,8 +32,8 @@ use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
 use virtiofsd_rs::seccomp::{enable_seccomp, SeccompAction};
 use virtiofsd_rs::server::Server;
 use virtiofsd_rs::Error as VhostUserFsError;
-use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
-use vmm_sys_util::eventfd::EventFd;
+use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
+use vmm_sys_util::{epoll::EventSet, eventfd::EventFd};
 
 const QUEUE_SIZE: usize = 1024;
 const NUM_QUEUES: usize = 2;
@@ -241,7 +241,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
             None => return Err(Error::NoMemoryConfigured),
         };
 
-        let avail_chains: Vec<DescriptorChain<GuestMemoryAtomic<GuestMemoryMmap>>> = vring_state
+        let avail_chains: Vec<DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap>>> = vring_state
             .get_queue_mut()
             .iter()
             .map_err(|_| Error::IterateQueue)?
@@ -418,11 +418,11 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackendMut<VringMutex>
     fn handle_event(
         &mut self,
         device_event: u16,
-        evset: epoll::Events,
+        evset: EventSet,
         vrings: &[VringMutex],
         _thread_id: usize,
     ) -> VhostUserBackendResult<bool> {
-        if evset != epoll::Events::EPOLLIN {
+        if evset != EventSet::IN {
             return Err(Error::HandleEventNotEpollIn.into());
         }
 
