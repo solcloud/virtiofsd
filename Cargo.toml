@@ -2,7 +2,7 @@
 name = "virtiofsd-rs"
 description = "A virtio-fs vhost-user device daemon"
 version = "0.1.0"
-authors = ["The Cloud Hypervisor Authors"]
+authors = ["The Virtiofs Project Developers"]
 edition = "2018"
 homepage = "https://virtio-fs.gitlab.io/"
 repository = "https://gitlab.com/virtio-fs/virtiofsd-rs"
