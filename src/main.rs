@@ -535,7 +535,7 @@ struct Opt {
     print_capabilities: bool,
 
     /// Log level (error, warn, info, debug, trace)
-    #[structopt(long = "log-level", default_value = "error")]
+    #[structopt(long = "log-level", default_value = "info")]
     log_level: LogLevel,
 
     /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
