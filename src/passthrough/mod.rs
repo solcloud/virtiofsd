@@ -729,15 +729,13 @@ impl PassthroughFs {
             data.refcount.fetch_add(1, Ordering::Acquire);
             data.inode
         } else {
-            let openable_handle = handle
-                .as_ref()
-                .map(|h| {
-                    h.to_openable(&self.mount_fds, |fd, flags| {
-                        reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                    })
-                    .ok() // Ignore errors, because having a handle is optional
-                })
-                .flatten();
+            let openable_handle = if let Some(h) = handle.as_ref() {
+                Some(h.to_openable(&self.mount_fds, |fd, flags| {
+                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+                })?)
+            } else {
+                None
+            };
 
             // Ignore errors, because having a handle is optional
             let file_or_handle = if let Some(h) = openable_handle {
@@ -968,15 +966,13 @@ impl FileSystem for PassthroughFs {
             None
         };
 
-        let openable_handle = handle
-            .as_ref()
-            .map(|h| {
-                h.to_openable(&self.mount_fds, |fd, flags| {
-                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                })
-                .ok() // Ignore errors, because having a handle is optional
-            })
-            .flatten();
+        let openable_handle = if let Some(h) = handle.as_ref() {
+            Some(h.to_openable(&self.mount_fds, |fd, flags| {
+                reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+            })?)
+        } else {
+            None
+        };
 
         let st = self.stat(&path_fd, None)?;
 
