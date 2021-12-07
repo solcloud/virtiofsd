@@ -16,7 +16,9 @@ use std::{env, error, fmt, io, process};
 use structopt::StructOpt;
 
 use vhost::vhost_user::message::*;
+use vhost::vhost_user::Error::PartialMessage;
 use vhost::vhost_user::{Listener, SlaveFsCacheReq};
+use vhost_user_backend::Error::HandleRequest;
 use vhost_user_backend::{VhostUserBackendMut, VhostUserDaemon, VringMutex, VringState, VringT};
 use virtio_bindings::bindings::virtio_net::*;
 use virtio_bindings::bindings::virtio_ring::{
@@ -805,13 +807,20 @@ fn main() {
     )
     .unwrap();
 
+    info!("Waiting for vhost-user socket connection...");
+
     if let Err(e) = daemon.start(listener) {
         error!("Failed to start daemon: {:?}", e);
         process::exit(1);
     }
 
+    info!("Client connected, servicing requests");
+
     if let Err(e) = daemon.wait() {
-        error!("Waiting for daemon failed: {:?}", e);
+        match e {
+            HandleRequest(PartialMessage) => info!("Client disconnected, shutting down"),
+            _ => error!("Waiting for daemon failed: {:?}", e),
+        }
     }
 
     let kill_evt = fs_backend
