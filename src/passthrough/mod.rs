@@ -354,6 +354,36 @@ impl Default for CachePolicy {
     }
 }
 
+/// When to use file handles to reference inodes instead of `O_PATH` file descriptors.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum InodeFileHandlesMode {
+    /// Never use file handles, always use `O_PATH` file descriptors.
+    Never,
+
+    /// Attempt to generate file handles, but fall back to `O_PATH` file descriptors where the
+    /// underlying filesystem does not support file handles.
+    Fallback,
+}
+
+impl FromStr for InodeFileHandlesMode {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "never" => Ok(InodeFileHandlesMode::Never),
+            "fallback" => Ok(InodeFileHandlesMode::Fallback),
+
+            _ => Err("invalid inode file handles mode"),
+        }
+    }
+}
+
+impl Default for InodeFileHandlesMode {
+    fn default() -> Self {
+        InodeFileHandlesMode::Never
+    }
+}
+
 /// Options that configure the behavior of the file system.
 #[derive(Debug)]
 pub struct Config {
@@ -443,12 +473,14 @@ pub struct Config {
     /// `InodeData`.  Not least because there is a maximum number of FDs a process can have open
     /// users may find it preferable to store a file handle instead, which we can use to open an FD
     /// when necessary.
-    /// So this switch allows to choose between the alternatives: When set to `false`, `InodeData`
+    /// So this switch allows to choose between the alternatives: When set to `Never`, `InodeData`
     /// will store `O_PATH` FDs.  Otherwise, we will attempt to generate and store a file handle
-    /// instead.
+    /// instead.  With `Fallback`, errors that are inherent to file handles (like no support from
+    /// the underlying filesystem) lead to falling back to `O_PATH` FDs, and only generic errors
+    /// (like `ENOENT` or `ENOMEM`) are passed to the guest.
     ///
-    /// The default is `false`.
-    pub inode_file_handles: bool,
+    /// The default is `Never`.
+    pub inode_file_handles: InodeFileHandlesMode,
 
     /// Whether the file system should support READDIRPLUS (READDIR+LOOKUP) operations.
     ///
@@ -476,7 +508,7 @@ impl Default for Config {
             proc_sfd_rawfd: None,
             proc_mountinfo_rawfd: None,
             announce_submounts: false,
-            inode_file_handles: false,
+            inode_file_handles: Default::default(),
             readdirplus: true,
             allow_direct_io: false,
         }
@@ -674,10 +706,9 @@ impl PassthroughFs {
             unsafe { File::from_raw_fd(fd) }
         };
 
-        let handle = if self.cfg.inode_file_handles {
-            FileHandle::from_fd(&path_fd)?
-        } else {
-            None
+        let handle = match self.cfg.inode_file_handles {
+            InodeFileHandlesMode::Never => None,
+            InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
         };
 
         let st = self.stat(&path_fd, None)?;
@@ -696,9 +727,9 @@ impl PassthroughFs {
             dev: st.st.st_dev,
             mnt_id: st.mnt_id,
         };
-        // Note that this will always be `None` if `cfg.inode_file_handles` is false, but we only
+        // Note that this will always be `None` if `cfg.inode_file_handles` is `Never`, but we only
         // really need this alt key when we do not have an `O_PATH` fd open for every inode.  So if
-        // `cfg.inode_file_handles` is false, we do not need this key anyway.
+        // `cfg.inode_file_handles` is `Never`, we do not need this key anyway.
         let handle_altkey = handle.map(InodeAltKey::Handle);
 
         let data = {
@@ -960,10 +991,9 @@ impl FileSystem for PassthroughFs {
             libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )?;
 
-        let handle = if self.cfg.inode_file_handles {
-            FileHandle::from_fd(&path_fd)?
-        } else {
-            None
+        let handle = match self.cfg.inode_file_handles {
+            InodeFileHandlesMode::Never => None,
+            InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
         };
 
         let openable_handle = if let Some(h) = handle.as_ref() {

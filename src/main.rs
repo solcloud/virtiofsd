@@ -27,7 +27,7 @@ use virtio_bindings::bindings::virtio_ring::{
 use virtio_queue::DescriptorChain;
 use virtiofsd_rs::descriptor_utils::{Error as VufDescriptorError, Reader, Writer};
 use virtiofsd_rs::filesystem::FileSystem;
-use virtiofsd_rs::passthrough::{self, CachePolicy, PassthroughFs};
+use virtiofsd_rs::passthrough::{self, CachePolicy, InodeFileHandlesMode, PassthroughFs};
 use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
 use virtiofsd_rs::seccomp::{enable_seccomp, SeccompAction};
 use virtiofsd_rs::server::Server;
@@ -501,9 +501,20 @@ struct Opt {
     #[structopt(long)]
     announce_submounts: bool,
 
-    /// Use file handles to reference inodes instead of O_PATH file descriptors
-    #[structopt(long)]
-    inode_file_handles: bool,
+    /// When to use file handles to reference inodes instead of O_PATH file descriptors (never,
+    /// fallback)
+    ///
+    /// - never: Never use file handles, always use O_PATH file descriptors.
+    ///
+    /// - fallback: Attempt to generate file handles, but fall back to O_PATH file descriptors
+    /// where the underlying filesystem does not support file handles.
+    ///
+    /// Using file handles reduces the number of file descriptors virtiofsd keeps open, which is
+    /// not only helpful with resources, but may also be important in cases where virtiofsd should
+    /// only have file descriptors open for files that are open in the guest, e.g. to get around
+    /// bad interactions with NFS's silly renaming.
+    #[structopt(long, require_equals = true, default_value = "never")]
+    inode_file_handles: InodeFileHandlesMode,
 
     /// The caching policy the file system should use (auto, always, never)
     #[structopt(long, default_value = "auto")]
@@ -625,7 +636,7 @@ fn drop_parent_capabilities() {
     }
 }
 
-fn drop_child_capabilities(inode_file_handles: bool) {
+fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode) {
     let mut required_caps = vec![
         "CHOWN",
         "DAC_OVERRIDE",
@@ -637,7 +648,7 @@ fn drop_child_capabilities(inode_file_handles: bool) {
         "SETFCAP",
     ];
 
-    if inode_file_handles {
+    if inode_file_handles != InodeFileHandlesMode::Never {
         required_caps.push("DAC_READ_SEARCH");
     }
 
