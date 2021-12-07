@@ -29,11 +29,11 @@ test:
       # on the 'main' branch, except it will upload a built binary. These are
       # kept separate to avoid accidentally uploading binaries when it's not
       # necessary.
-    - main@virtio-fs/virtiofsd-rs
+    - main@virtio-fs/virtiofsd
 
 # This is identical to the 'test' job except it will upload a debug
 # binary for people to consume and test without needing a Rust toolchain
-# to build virtiofsd-rs.
+# to build virtiofsd.
 #
 # This only runs when code is merged to the 'main' branch.
 publish:
@@ -43,8 +43,8 @@ publish:
     - cargo build --verbose
     - cargo test --verbose
   artifacts:
-    name: "virtiofsd-rs-$CI_COMMIT_SHORT_SHA"
+    name: "virtiofsd-$CI_COMMIT_SHORT_SHA"
     paths:
-      - target/debug/virtiofsd-rs
+      - target/debug/virtiofsd
   only:
-    - main@virtio-fs/virtiofsd-rs
+    - main@virtio-fs/virtiofsd

@@ -543,7 +543,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "virtiofsd-rs"
+name = "virtiofsd"
 version = "0.1.0"
 dependencies = [
  "bitflags",

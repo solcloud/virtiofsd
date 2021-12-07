@@ -1,6 +1,6 @@
-# Contributing to virtiofsd-rs
+# Contributing to virtiofsd
 
-virtiofsd-rs is an open source project licensed under the [Apache v2 License](https://opensource.org/licenses/Apache-2.0) and the [BSD 3 Clause](https://opensource.org/licenses/BSD-3-Clause) license.
+virtiofsd is an open source project licensed under the [Apache v2 License](https://opensource.org/licenses/Apache-2.0) and the [BSD 3 Clause](https://opensource.org/licenses/BSD-3-Clause) license.
 
 ## Coding Style
 
@@ -46,20 +46,20 @@ Signed-off-by: Sergio Lopez <slp@redhat.com>
 
 ## Pull requests
 
-virtiofsd-rs uses the “fork-and-merge” development model. Follow these steps if
-you want to merge your changes to `virtiofsd-rs`:
+virtiofsd uses the “fork-and-merge” development model. Follow these steps if
+you want to merge your changes to `virtiofsd`:
 
-1. Fork the [virtiofsd-rs](https://gitlab.com/virtio-fs/virtiofsd-rs) project
+1. Fork the [virtiofsd](https://gitlab.com/virtio-fs/virtiofsd) project
    into your GitLab organization.
 2. Within your fork, create a branch for your contribution.
 3. [Create a merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-   against the master branch of the virtiofsd-rs repository.
+   against the master branch of the virtiofsd repository.
 4. Once the merge request is approved, one of the maintainers will merge it.
 
 ## Issue tracking
 
 If you have a problem, please let us know. We recommend using
-[gitlab issues](https://gitlab.com/virtio-fs/virtiofsd-rs/-/issues/new) for formally
+[gitlab issues](https://gitlab.com/virtio-fs/virtiofsd/-/issues/new) for formally
 reporting and documenting them.
 
 You can also contact us via email through the [virtio-fs mailing list](https://www.redhat.com/mailman/listinfo/virtio-fs).

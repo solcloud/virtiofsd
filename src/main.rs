@@ -23,13 +23,13 @@ use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use virtio_queue::DescriptorChain;
-use virtiofsd_rs::descriptor_utils::{Error as VufDescriptorError, Reader, Writer};
-use virtiofsd_rs::filesystem::FileSystem;
-use virtiofsd_rs::passthrough::{self, CachePolicy, InodeFileHandlesMode, PassthroughFs};
-use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
-use virtiofsd_rs::seccomp::{enable_seccomp, SeccompAction};
-use virtiofsd_rs::server::Server;
-use virtiofsd_rs::Error as VhostUserFsError;
+use virtiofsd::descriptor_utils::{Error as VufDescriptorError, Reader, Writer};
+use virtiofsd::filesystem::FileSystem;
+use virtiofsd::passthrough::{self, CachePolicy, InodeFileHandlesMode, PassthroughFs};
+use virtiofsd::sandbox::{Sandbox, SandboxMode};
+use virtiofsd::seccomp::{enable_seccomp, SeccompAction};
+use virtiofsd::server::Server;
+use virtiofsd::Error as VhostUserFsError;
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
 use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::EventFd;
