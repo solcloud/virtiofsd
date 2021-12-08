@@ -759,7 +759,11 @@ fn main() {
         None
     };
 
-    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile);
+    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile)
+        .unwrap_or_else(|error| {
+            error!("Error creating sandbox: {}", error);
+            process::exit(1)
+        });
     let fs_cfg = match sandbox.enter().unwrap_or_else(|error| {
         error!("Error entering sandbox: {}", error);
         process::exit(1)

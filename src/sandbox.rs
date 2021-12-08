@@ -125,14 +125,23 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    pub fn new(shared_dir: String, sandbox_mode: SandboxMode, rlimit_nofile: Option<u64>) -> Self {
-        Sandbox {
-            shared_dir,
+    pub fn new(
+        shared_dir: String,
+        sandbox_mode: SandboxMode,
+        rlimit_nofile: Option<u64>,
+    ) -> io::Result<Self> {
+        let shared_dir_rp = fs::canonicalize(shared_dir)?;
+        let shared_dir_rp_str = shared_dir_rp
+            .to_str()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+
+        Ok(Sandbox {
+            shared_dir: shared_dir_rp_str.into(),
             proc_self_fd: None,
             mountinfo_fd: None,
             sandbox_mode,
             rlimit_nofile,
-        }
+        })
     }
 
     // Make `self.shared_dir` our root directory, and get isolated file descriptors for
