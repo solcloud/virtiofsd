@@ -33,7 +33,8 @@ use virtiofsd_rs::seccomp::{enable_seccomp, SeccompAction};
 use virtiofsd_rs::server::Server;
 use virtiofsd_rs::Error as VhostUserFsError;
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
-use vmm_sys_util::{epoll::EventSet, eventfd::EventFd};
+use vmm_sys_util::epoll::EventSet;
+use vmm_sys_util::eventfd::EventFd;
 
 const QUEUE_SIZE: usize = 1024;
 const NUM_QUEUES: usize = 2;
