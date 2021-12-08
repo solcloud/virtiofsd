@@ -465,4 +465,13 @@ impl Sandbox {
             SandboxMode::None => self.shared_dir.clone(),
         }
     }
+
+    /// Return the prefix to strip from /proc/self/mountinfo entries to get paths that are actually
+    /// accessible in our sandbox
+    pub fn get_mountinfo_prefix(&self) -> Option<String> {
+        match self.sandbox_mode {
+            SandboxMode::Namespace | SandboxMode::None => None,
+            SandboxMode::Chroot => Some(self.shared_dir.clone()),
+        }
+    }
 }

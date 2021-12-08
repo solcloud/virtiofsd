@@ -776,6 +776,7 @@ fn main() {
         None => passthrough::Config {
             cache_policy: opt.cache,
             root_dir: sandbox.get_root_dir(),
+            mountinfo_prefix: sandbox.get_mountinfo_prefix(),
             xattr,
             xattrmap,
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
