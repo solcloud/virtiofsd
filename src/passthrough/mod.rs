@@ -736,8 +736,7 @@ impl PassthroughFs {
             let inodes = self.inodes.read().unwrap();
 
             handle_altkey
-                .map(|altkey| inodes.get_alt(&altkey))
-                .flatten()
+                .and_then(|altkey| inodes.get_alt(&altkey))
                 .or_else(|| {
                     inodes.get_alt(&ids_altkey).filter(|data| {
                         // When we have to fall back to looking up an inode by its inode ID, ensure
