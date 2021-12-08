@@ -760,17 +760,10 @@ impl PassthroughFs {
             data.refcount.fetch_add(1, Ordering::Acquire);
             data.inode
         } else {
-            let openable_handle = if let Some(h) = handle.as_ref() {
-                Some(h.to_openable(&self.mount_fds, |fd, flags| {
+            let file_or_handle = if let Some(h) = handle.as_ref() {
+                FileOrHandle::Handle(h.to_openable(&self.mount_fds, |fd, flags| {
                     reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
                 })?)
-            } else {
-                None
-            };
-
-            // Ignore errors, because having a handle is optional
-            let file_or_handle = if let Some(h) = openable_handle {
-                FileOrHandle::Handle(h)
             } else {
                 FileOrHandle::File(path_fd)
             };
@@ -996,19 +989,12 @@ impl FileSystem for PassthroughFs {
             InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
         };
 
-        let openable_handle = if let Some(h) = handle.as_ref() {
-            Some(h.to_openable(&self.mount_fds, |fd, flags| {
-                reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-            })?)
-        } else {
-            None
-        };
-
         let st = self.stat(&path_fd, None)?;
 
-        // Ignore errors, because having a handle is optional
-        let file_or_handle = if let Some(h) = openable_handle {
-            FileOrHandle::Handle(h)
+        let file_or_handle = if let Some(h) = handle.as_ref() {
+            FileOrHandle::Handle(h.to_openable(&self.mount_fds, |fd, flags| {
+                reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+            })?)
         } else {
             FileOrHandle::File(path_fd)
         };
