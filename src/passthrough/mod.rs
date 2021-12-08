@@ -363,6 +363,9 @@ pub enum InodeFileHandlesMode {
     /// Attempt to generate file handles, but fall back to `O_PATH` file descriptors where the
     /// underlying filesystem does not support file handles.
     Fallback,
+
+    /// Always use file handles, never fall back to `O_PATH` file descriptors.
+    Mandatory,
 }
 
 impl FromStr for InodeFileHandlesMode {
@@ -372,6 +375,7 @@ impl FromStr for InodeFileHandlesMode {
         match s {
             "never" => Ok(InodeFileHandlesMode::Never),
             "fallback" => Ok(InodeFileHandlesMode::Fallback),
+            "mandatory" => Ok(InodeFileHandlesMode::Mandatory),
 
             _ => Err("invalid inode file handles mode"),
         }
@@ -477,7 +481,8 @@ pub struct Config {
     /// will store `O_PATH` FDs.  Otherwise, we will attempt to generate and store a file handle
     /// instead.  With `Fallback`, errors that are inherent to file handles (like no support from
     /// the underlying filesystem) lead to falling back to `O_PATH` FDs, and only generic errors
-    /// (like `ENOENT` or `ENOMEM`) are passed to the guest.
+    /// (like `ENOENT` or `ENOMEM`) are passed to the guest.  `Mandatory` enforces the use of file
+    /// handles, returning all errors to the guest.
     ///
     /// The default is `Never`.
     pub inode_file_handles: InodeFileHandlesMode,
@@ -709,6 +714,10 @@ impl PassthroughFs {
         let handle = match self.cfg.inode_file_handles {
             InodeFileHandlesMode::Never => None,
             InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
+            InodeFileHandlesMode::Mandatory => Some(
+                FileHandle::from_fd(&path_fd)?
+                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EOPNOTSUPP))?,
+            ),
         };
 
         let st = self.stat(&path_fd, None)?;
@@ -987,6 +996,10 @@ impl FileSystem for PassthroughFs {
         let handle = match self.cfg.inode_file_handles {
             InodeFileHandlesMode::Never => None,
             InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
+            InodeFileHandlesMode::Mandatory => Some(
+                FileHandle::from_fd(&path_fd)?
+                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EOPNOTSUPP))?,
+            ),
         };
 
         let st = self.stat(&path_fd, None)?;

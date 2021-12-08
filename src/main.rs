@@ -507,7 +507,11 @@ struct Opt {
     /// - never: Never use file handles, always use O_PATH file descriptors.
     ///
     /// - fallback: Attempt to generate file handles, but fall back to O_PATH file descriptors
-    /// where the underlying filesystem does not support file handles.
+    /// where the underlying filesystem does not support file handles.  Useful when there are
+    /// various different filesystems under the shared directory and some of them do not support
+    /// file handles.
+    ///
+    /// - mandatory: Always use file handles, never fall back to O_PATH file descriptors.
     ///
     /// Using file handles reduces the number of file descriptors virtiofsd keeps open, which is
     /// not only helpful with resources, but may also be important in cases where virtiofsd should
