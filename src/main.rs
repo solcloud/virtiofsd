@@ -545,6 +545,10 @@ struct Opt {
     /// Options in a format compatible with the legacy implementation
     #[structopt(short = "o")]
     compat_options: Option<Vec<String>>,
+
+    /// Set log level to "debug" in a compatible way with the legacy implementation
+    #[structopt(short = "d")]
+    compat_debug: bool,
 }
 
 fn parse_compat(opt: Opt) -> Result<Opt> {
@@ -675,7 +679,11 @@ fn main() {
         return;
     }
 
-    initialize_logging(&opt.log_level);
+    if opt.compat_debug {
+        initialize_logging(&LogLevel::Debug)
+    } else {
+        initialize_logging(&opt.log_level)
+    }
 
     let shared_dir = match opt.shared_dir.as_ref() {
         Some(s) => s,
