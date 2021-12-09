@@ -66,11 +66,23 @@ pub enum Error {
     InvalidNrOpen(std::num::ParseIntError),
     /// Failed to set rlimit.
     SetRlimit(io::Error),
+    /// Sandbox mode unavailable for non-privileged users
+    SandboxModeInvalidUID,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "virtiofsd_sandbox_error: {:?}", self)
+        use self::Error::SandboxModeInvalidUID;
+        match self {
+            SandboxModeInvalidUID => {
+                write!(
+                    f,
+                    "sandbox modes chroot and none, can only be used by \
+                    root (Use '--sandbox namespace' instead)"
+                )
+            }
+            _ => write!(f, "{:?}", self),
+        }
     }
 }
 
@@ -418,6 +430,11 @@ impl Sandbox {
     /// On success, the returned value will be the PID of the child for the parent and `None` for
     /// the child itself, with the latter running isolated in `self.shared_dir`.
     pub fn enter(&mut self) -> Result<Option<i32>, Error> {
+        let uid = unsafe { libc::geteuid() };
+        if uid != 0 && self.sandbox_mode != SandboxMode::Namespace {
+            return Err(Error::SandboxModeInvalidUID);
+        }
+
         match self.sandbox_mode {
             SandboxMode::Namespace => self.enter_namespace(),
             SandboxMode::Chroot => self.enter_chroot(),
