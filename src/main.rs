@@ -756,7 +756,10 @@ fn main() {
     };
 
     let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile);
-    let fs_cfg = match sandbox.enter().unwrap() {
+    let fs_cfg = match sandbox.enter().unwrap_or_else(|error| {
+        error!("Error entering sandbox: {}", error);
+        process::exit(1)
+    }) {
         Some(child_pid) => {
             drop_parent_capabilities();
             unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
