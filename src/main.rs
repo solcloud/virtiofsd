@@ -716,7 +716,10 @@ fn main() {
                 println!("warning: use of deprecated parameter '--socket': Please use the '--socket-path' option instead.");
                 opt.socket.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
             });
-            let listener = Listener::new(socket, true).unwrap();
+            let listener = Listener::new(socket, true).unwrap_or_else(|error| {
+                error!("Error creating listener: {}", error);
+                process::exit(1);
+            });
 
             // Restore umask
             unsafe { libc::umask(old_umask) };
