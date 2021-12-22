@@ -29,6 +29,9 @@ pub struct MountFds {
 
     /// /proc/self/mountinfo
     mountinfo: Mutex<File>,
+
+    /// An optional prefix to strip from all mount points in mountinfo
+    mountprefix: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
@@ -69,10 +72,11 @@ extern "C" {
 }
 
 impl MountFds {
-    pub fn new(mountinfo: File) -> Self {
+    pub fn new(mountinfo: File, mountprefix: Option<String>) -> Self {
         MountFds {
             map: Default::default(),
             mountinfo: Mutex::new(mountinfo),
+            mountprefix,
         }
     }
 
@@ -102,7 +106,21 @@ impl MountFds {
         });
 
         match path {
-            Some(p) => Ok(String::from(p)),
+            Some(p) => {
+                let p = String::from(p);
+                if let Some(prefix) = self.mountprefix.as_ref() {
+                    if let Some(suffix) = p.strip_prefix(prefix) {
+                        Ok(suffix.into())
+                    } else {
+                        // Mount is outside the shared directory, so it must be the mount the root
+                        // directory is on
+                        Ok("/".into())
+                    }
+                } else {
+                    Ok(p)
+                }
+            }
+
             None => Err(io::Error::from_raw_os_error(libc::EINVAL)),
         }
     }

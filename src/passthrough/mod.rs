@@ -425,6 +425,11 @@ pub struct Config {
     /// The default is `/`.
     pub root_dir: String,
 
+    /// A prefix to strip from the mount points listed in /proc/self/mountinfo.
+    ///
+    /// The default is `None`.
+    pub mountinfo_prefix: Option<String>,
+
     /// Whether the file system should support Extended Attributes (xattr). Enabling this feature may
     /// have a significant impact on performance, especially on write parallelism. This is the result
     /// of FUSE attempting to remove the special file privileges after each write request.
@@ -502,6 +507,7 @@ impl Default for Config {
             cache_policy: Default::default(),
             writeback: false,
             root_dir: String::from("/"),
+            mountinfo_prefix: None,
             xattr: false,
             xattrmap: None,
             xattr_security_capability: None,
@@ -598,7 +604,7 @@ impl PassthroughFs {
             next_inode: AtomicU64::new(fuse::ROOT_ID + 1),
             handles: RwLock::new(BTreeMap::new()),
             next_handle: AtomicU64::new(0),
-            mount_fds: MountFds::new(mountinfo_fd),
+            mount_fds: MountFds::new(mountinfo_fd, cfg.mountinfo_prefix.clone()),
             proc_self_fd,
             root_fd,
             writeback: AtomicBool::new(false),

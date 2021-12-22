@@ -125,14 +125,23 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    pub fn new(shared_dir: String, sandbox_mode: SandboxMode, rlimit_nofile: Option<u64>) -> Self {
-        Sandbox {
-            shared_dir,
+    pub fn new(
+        shared_dir: String,
+        sandbox_mode: SandboxMode,
+        rlimit_nofile: Option<u64>,
+    ) -> io::Result<Self> {
+        let shared_dir_rp = fs::canonicalize(shared_dir)?;
+        let shared_dir_rp_str = shared_dir_rp
+            .to_str()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+
+        Ok(Sandbox {
+            shared_dir: shared_dir_rp_str.into(),
             proc_self_fd: None,
             mountinfo_fd: None,
             sandbox_mode,
             rlimit_nofile,
-        }
+        })
     }
 
     // Make `self.shared_dir` our root directory, and get isolated file descriptors for
@@ -454,6 +463,15 @@ impl Sandbox {
         match self.sandbox_mode {
             SandboxMode::Namespace | SandboxMode::Chroot => "/".to_string(),
             SandboxMode::None => self.shared_dir.clone(),
+        }
+    }
+
+    /// Return the prefix to strip from /proc/self/mountinfo entries to get paths that are actually
+    /// accessible in our sandbox
+    pub fn get_mountinfo_prefix(&self) -> Option<String> {
+        match self.sandbox_mode {
+            SandboxMode::Namespace | SandboxMode::None => None,
+            SandboxMode::Chroot => Some(self.shared_dir.clone()),
         }
     }
 }

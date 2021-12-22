@@ -759,7 +759,11 @@ fn main() {
         None
     };
 
-    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile);
+    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile)
+        .unwrap_or_else(|error| {
+            error!("Error creating sandbox: {}", error);
+            process::exit(1)
+        });
     let fs_cfg = match sandbox.enter().unwrap_or_else(|error| {
         error!("Error entering sandbox: {}", error);
         process::exit(1)
@@ -772,6 +776,7 @@ fn main() {
         None => passthrough::Config {
             cache_policy: opt.cache,
             root_dir: sandbox.get_root_dir(),
+            mountinfo_prefix: sandbox.get_mountinfo_prefix(),
             xattr,
             xattrmap,
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
