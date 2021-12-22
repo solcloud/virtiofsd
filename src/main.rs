@@ -10,16 +10,14 @@ use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::{env, error, fmt, io, process};
 
 use structopt::StructOpt;
 
 use vhost::vhost_user::message::*;
 use vhost::vhost_user::{Listener, SlaveFsCacheReq};
-use vhost_user_backend::{
-    VhostUserBackendMut, VhostUserDaemon, VringMutex, VringStateMutGuard, VringT,
-};
+use vhost_user_backend::{VhostUserBackendMut, VhostUserDaemon, VringMutex, VringState, VringT};
 use virtio_bindings::bindings::virtio_net::*;
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
@@ -232,10 +230,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
         Ok(used_any)
     }
 
-    fn process_queue_serial(
-        &mut self,
-        vring_state: &mut VringStateMutGuard<GuestMemoryAtomic<GuestMemoryMmap>>,
-    ) -> Result<bool> {
+    fn process_queue_serial(&mut self, vring_state: &mut MutexGuard<VringState>) -> Result<bool> {
         let mut used_any = false;
         let mem = match &self.mem {
             Some(m) => m.memory(),
