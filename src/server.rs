@@ -82,6 +82,9 @@ impl<F: FileSystem + Sync> Server<F> {
                 w,
             );
         }
+
+        debug!("Received request: {:?}", in_header.opcode);
+
         match in_header.opcode {
             x if x == Opcode::Lookup as u32 => self.lookup(in_header, r, w),
             x if x == Opcode::Forget as u32 => self.forget(in_header, r), // No reply.
@@ -1465,6 +1468,8 @@ fn reply_ok<T: ByteValued>(
         unique,
     };
 
+    debug!("Replying OK, header: {:?}", header);
+
     w.write_all(header.as_slice())
         .map_err(Error::EncodeMessage)?;
 
@@ -1486,6 +1491,8 @@ fn reply_error(e: io::Error, unique: u64, mut w: Writer) -> Result<usize> {
         error: -e.raw_os_error().unwrap_or(libc::EIO),
         unique,
     };
+
+    debug!("Replying ERROR, header: {:?}", header);
 
     w.write_all(header.as_slice())
         .map_err(Error::EncodeMessage)?;

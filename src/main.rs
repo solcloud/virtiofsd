@@ -10,28 +10,28 @@ use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::{env, error, fmt, io, process};
 
 use structopt::StructOpt;
 
 use vhost::vhost_user::message::*;
+use vhost::vhost_user::Error::PartialMessage;
 use vhost::vhost_user::{Listener, SlaveFsCacheReq};
-use vhost_user_backend::{
-    VhostUserBackendMut, VhostUserDaemon, VringMutex, VringStateMutGuard, VringT,
-};
+use vhost_user_backend::Error::HandleRequest;
+use vhost_user_backend::{VhostUserBackendMut, VhostUserDaemon, VringMutex, VringState, VringT};
 use virtio_bindings::bindings::virtio_net::*;
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use virtio_queue::DescriptorChain;
-use virtiofsd_rs::descriptor_utils::{Error as VufDescriptorError, Reader, Writer};
-use virtiofsd_rs::filesystem::FileSystem;
-use virtiofsd_rs::passthrough::{self, CachePolicy, InodeFileHandlesMode, PassthroughFs};
-use virtiofsd_rs::sandbox::{Sandbox, SandboxMode};
-use virtiofsd_rs::seccomp::{enable_seccomp, SeccompAction};
-use virtiofsd_rs::server::Server;
-use virtiofsd_rs::Error as VhostUserFsError;
+use virtiofsd::descriptor_utils::{Error as VufDescriptorError, Reader, Writer};
+use virtiofsd::filesystem::FileSystem;
+use virtiofsd::passthrough::{self, CachePolicy, InodeFileHandlesMode, PassthroughFs};
+use virtiofsd::sandbox::{Sandbox, SandboxMode};
+use virtiofsd::seccomp::{enable_seccomp, SeccompAction};
+use virtiofsd::server::Server;
+use virtiofsd::Error as VhostUserFsError;
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
 use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::EventFd;
@@ -232,10 +232,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
         Ok(used_any)
     }
 
-    fn process_queue_serial(
-        &mut self,
-        vring_state: &mut VringStateMutGuard<GuestMemoryAtomic<GuestMemoryMmap>>,
-    ) -> Result<bool> {
+    fn process_queue_serial(&mut self, vring_state: &mut MutexGuard<VringState>) -> Result<bool> {
         let mut used_any = false;
         let mem = match &self.mem {
             Some(m) => m.memory(),
@@ -538,7 +535,7 @@ struct Opt {
     print_capabilities: bool,
 
     /// Log level (error, warn, info, debug, trace)
-    #[structopt(long = "log-level", default_value = "error")]
+    #[structopt(long = "log-level", default_value = "info")]
     log_level: LogLevel,
 
     /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
@@ -548,6 +545,10 @@ struct Opt {
     /// Options in a format compatible with the legacy implementation
     #[structopt(short = "o")]
     compat_options: Option<Vec<String>>,
+
+    /// Set log level to "debug" in a compatible way with the legacy implementation
+    #[structopt(short = "d")]
+    compat_debug: bool,
 }
 
 fn parse_compat(opt: Opt) -> Result<Opt> {
@@ -678,7 +679,11 @@ fn main() {
         return;
     }
 
-    initialize_logging(&opt.log_level);
+    if opt.compat_debug {
+        initialize_logging(&LogLevel::Debug)
+    } else {
+        initialize_logging(&opt.log_level)
+    }
 
     let shared_dir = match opt.shared_dir.as_ref() {
         Some(s) => s,
@@ -810,13 +815,20 @@ fn main() {
     )
     .unwrap();
 
+    info!("Waiting for vhost-user socket connection...");
+
     if let Err(e) = daemon.start(listener) {
         error!("Failed to start daemon: {:?}", e);
         process::exit(1);
     }
 
+    info!("Client connected, servicing requests");
+
     if let Err(e) = daemon.wait() {
-        error!("Waiting for daemon failed: {:?}", e);
+        match e {
+            HandleRequest(PartialMessage) => info!("Client disconnected, shutting down"),
+            _ => error!("Waiting for daemon failed: {:?}", e),
+        }
     }
 
     let kill_evt = fs_backend

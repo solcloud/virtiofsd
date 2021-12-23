@@ -1,5 +1,5 @@
 //! The `xattrmap` module is used to translate extended attribute operations
-//! between the server (virtiofsd-rs) and the client (the virtio-fs guest kernel
+//! between the server (virtiofsd) and the client (the virtio-fs guest kernel
 //! module).
 //!
 //! Here's a non-exhaustive list of use-cases in which it may be beneficial to
@@ -16,7 +16,7 @@
 //!
 //! ## Rules
 //!
-//! The entity that launches virtiofsd-rs may provide an "extended attributes
+//! The entity that launches virtiofsd may provide an "extended attributes
 //! mapping" (or "xattrmap") that defines how extended attributes should be
 //! translated. An xattrmap is really just a series of rules with a specific
 //! syntax. When translating an xattr, the xattrmap rules are traversed in the
