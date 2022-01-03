@@ -553,6 +553,11 @@ struct Opt {
     /// Set log level to "debug" in a compatible way with the legacy implementation
     #[structopt(short = "d")]
     compat_debug: bool,
+
+    // Set foreground operation (Deprecated)
+    // Do nothing. It is hidden from the help message to make it easier to remove it later
+    #[structopt(short = "f", hidden = true)]
+    _compat_foreground: bool,
 }
 
 fn parse_compat(opt: Opt) -> Result<Opt> {
@@ -596,6 +601,7 @@ fn parse_compat(opt: Opt) -> Result<Opt> {
             "allow_direct_io" => opt.allow_direct_io = true,
             "no_allow_direct_io" => opt.allow_direct_io = false,
             "announce_submounts" => opt.announce_submounts = true,
+            "no_posix_lock" | "no_flock" => (),
             _ => return Err(Error::InvalidCompatArgument),
         }
         Ok(())
