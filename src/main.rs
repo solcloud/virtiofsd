@@ -523,6 +523,10 @@ struct Opt {
     #[structopt(short = "d")]
     compat_debug: bool,
 
+    /// Disable KILLPRIV V2 support
+    #[structopt(long)]
+    no_killpriv_v2: bool,
+
     // Set foreground operation (Deprecated)
     // Do nothing. It is hidden from the help message to make it easier to remove it later
     #[structopt(short = "f", hidden = true)]
@@ -587,6 +591,8 @@ fn parse_compat(opt: Opt) -> Opt {
             "allow_direct_io" => opt.allow_direct_io = true,
             "no_allow_direct_io" => opt.allow_direct_io = false,
             "announce_submounts" => opt.announce_submounts = true,
+            "killpriv_v2" => opt.no_killpriv_v2 = false,
+            "no_killpriv_v2" => opt.no_killpriv_v2 = true,
             "no_posix_lock" | "no_flock" => (),
             _ => argument_error(option),
         }
@@ -684,6 +690,8 @@ fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode) {
 
 fn main() {
     let opt = parse_compat(Opt::from_args());
+
+    let killpriv_v2 = !opt.no_killpriv_v2;
 
     if opt.print_capabilities {
         print_capabilities();
@@ -806,6 +814,7 @@ fn main() {
             readdirplus,
             writeback: opt.writeback,
             allow_direct_io: opt.allow_direct_io,
+            killpriv_v2,
             ..Default::default()
         },
     };

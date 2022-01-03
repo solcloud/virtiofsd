@@ -503,6 +503,10 @@ pub struct Config {
     ///
     /// The default is `false`.
     pub allow_direct_io: bool,
+
+    /// If `killpriv_v2` is true then it indicates that the file system is expected to clear the
+    /// setuid and setgid bits.
+    pub killpriv_v2: bool,
 }
 
 impl Default for Config {
@@ -523,6 +527,7 @@ impl Default for Config {
             inode_file_handles: Default::default(),
             readdirplus: true,
             allow_direct_io: false,
+            killpriv_v2: true,
         }
     }
 }
@@ -825,7 +830,7 @@ impl PassthroughFs {
         flags: u32,
     ) -> io::Result<(Option<Handle>, OpenOptions)> {
         let file = RwLock::new({
-            let _killpriv_guard = if kill_priv {
+            let _killpriv_guard = if self.cfg.killpriv_v2 && kill_priv {
                 drop_effective_cap("FSETID")?
             } else {
                 None
@@ -1066,6 +1071,14 @@ impl FileSystem for PassthroughFs {
                 eprintln!("Warning: Cannot announce submounts, client does not support it");
             }
         }
+        if self.cfg.killpriv_v2 {
+            if capable.contains(FsOptions::HANDLE_KILLPRIV_V2) {
+                opts |= FsOptions::HANDLE_KILLPRIV_V2;
+            } else {
+                warn!("Cannot enable KILLPRIV_V2, client does not support it");
+            }
+        }
+
         Ok(opts)
     }
 
@@ -1379,7 +1392,7 @@ impl FileSystem for PassthroughFs {
         let f = data.file.read().unwrap();
 
         {
-            let _killpriv_guard = if kill_priv {
+            let _killpriv_guard = if self.cfg.killpriv_v2 && kill_priv {
                 // We need to drop FSETID during a write so that the kernel will remove setuid
                 // or setgid bits from the file if it was written to by someone other than the
                 // owner.
@@ -1503,11 +1516,12 @@ impl FileSystem for PassthroughFs {
                 }
             };
 
-            let _killpriv_guard = if valid.contains(SetattrValid::KILL_SUIDGID) {
-                drop_effective_cap("FSETID")?
-            } else {
-                None
-            };
+            let _killpriv_guard =
+                if self.cfg.killpriv_v2 && valid.contains(SetattrValid::KILL_SUIDGID) {
+                    drop_effective_cap("FSETID")?
+                } else {
+                    None
+                };
 
             // Safe because this doesn't modify any memory and we check the return value.
             let res = self
