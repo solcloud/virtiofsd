@@ -697,6 +697,33 @@ impl PassthroughFs {
             .into_file()
     }
 
+    /// Generate a file handle for `fd` using `FileHandle::from_fd()`.  These are the possible
+    /// return values:
+    /// - `Ok(Some(_))`: Success, caller should use this file handle.
+    /// - `Ok(None)`: No error, but no file handle is available.  The caller should fall back to
+    ///               using an `O_PATH` FD.
+    /// - `Err(_)`: An error occurred, the caller should return this to the guest.
+    ///
+    /// This function takes the chosen `self.cfg.inode_file_handles` mode into account:
+    /// - `Never`: Always return `Ok(None)`.
+    /// - `Fallback`: Return `Ok(None)` when file handles are not supported by this filesystem.
+    ///               Otherwise, return either `Ok(Some(_))` or `Err(_)`, depending on whether a
+    ///               file handle could be generated or not.
+    /// - `Mandatory`: Never return `Ok(None)`.  When the filesystem does not support file handles,
+    ///                return an `Err(_)`.
+    fn get_file_handle_opt(&self, fd: &impl AsRawFd) -> io::Result<Option<FileHandle>> {
+        let handle = match self.cfg.inode_file_handles {
+            InodeFileHandlesMode::Never => None,
+            InodeFileHandlesMode::Fallback => FileHandle::from_fd(fd)?,
+            InodeFileHandlesMode::Mandatory => Some(
+                FileHandle::from_fd(fd)?
+                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EOPNOTSUPP))?,
+            ),
+        };
+
+        Ok(handle)
+    }
+
     fn do_lookup(&self, parent: Inode, name: &CStr) -> io::Result<Entry> {
         let p = self
             .inodes
@@ -725,15 +752,7 @@ impl PassthroughFs {
             unsafe { File::from_raw_fd(fd) }
         };
 
-        let handle = match self.cfg.inode_file_handles {
-            InodeFileHandlesMode::Never => None,
-            InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
-            InodeFileHandlesMode::Mandatory => Some(
-                FileHandle::from_fd(&path_fd)?
-                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EOPNOTSUPP))?,
-            ),
-        };
-
+        let handle = self.get_file_handle_opt(&path_fd)?;
         let st = self.stat(&path_fd, None)?;
 
         let mut attr_flags: u32 = 0;
@@ -1007,15 +1026,7 @@ impl FileSystem for PassthroughFs {
             libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )?;
 
-        let handle = match self.cfg.inode_file_handles {
-            InodeFileHandlesMode::Never => None,
-            InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
-            InodeFileHandlesMode::Mandatory => Some(
-                FileHandle::from_fd(&path_fd)?
-                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EOPNOTSUPP))?,
-            ),
-        };
-
+        let handle = self.get_file_handle_opt(&path_fd)?;
         let st = self.stat(&path_fd, None)?;
 
         let file_or_handle = if let Some(h) = handle.as_ref() {
