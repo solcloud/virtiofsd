@@ -17,7 +17,7 @@ use crate::multikey::MultikeyBTreeMap;
 use crate::read_dir::ReadDir;
 use file_handle::{FileHandle, OpenableFileHandle};
 use mount_fd::MountFds;
-use stat::{stat64, statx, StatExt};
+use stat::{stat64, statx, MountId, StatExt};
 use std::borrow::Cow;
 use std::collections::{btree_map, BTreeMap};
 use std::ffi::{CStr, CString};
@@ -42,7 +42,7 @@ enum InodeAltKey {
     Ids {
         ino: libc::ino64_t,
         dev: libc::dev_t,
-        mnt_id: u64,
+        mnt_id: MountId,
     },
     Handle(FileHandle),
 }
@@ -60,7 +60,7 @@ struct InodeData {
 
     // Required to detect submounts
     dev: libc::dev_t,
-    mnt_id: u64,
+    mnt_id: MountId,
 
     // File type and mode
     mode: u32,

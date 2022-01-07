@@ -1,7 +1,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE-BSD-3-Clause file.
 
-use crate::passthrough::stat::statx;
+use crate::passthrough::stat::{statx, MountId};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
@@ -10,8 +10,8 @@ use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 pub struct MountFd {
-    map: Weak<RwLock<HashMap<u64, Weak<MountFd>>>>,
-    mount_id: u64,
+    map: Weak<RwLock<HashMap<MountId, Weak<MountFd>>>>,
+    mount_id: MountId,
     file: File,
 }
 
@@ -26,7 +26,7 @@ pub struct MountFd {
 /// 1. Creating a file handle only returns a mount ID, but opening a file handle requires an open FD
 ///    on the respective mount.  So we look that up in the map.
 pub struct MountFds {
-    map: Arc<RwLock<HashMap<u64, Weak<MountFd>>>>,
+    map: Arc<RwLock<HashMap<MountId, Weak<MountFd>>>>,
 
     /// /proc/self/mountinfo
     mountinfo: Mutex<File>,
@@ -73,7 +73,7 @@ impl MountFds {
         }
     }
 
-    pub fn get<F>(&self, mount_id: u64, reopen_fd: F) -> io::Result<Arc<MountFd>>
+    pub fn get<F>(&self, mount_id: MountId, reopen_fd: F) -> io::Result<Arc<MountFd>>
     where
         F: FnOnce(RawFd, libc::c_int) -> io::Result<File>,
     {
@@ -159,7 +159,7 @@ impl MountFds {
     }
 
     /// Given a mount ID, return the mount root path (by reading `/proc/self/mountinfo`)
-    fn get_mount_root(&self, mount_id: u64) -> io::Result<String> {
+    fn get_mount_root(&self, mount_id: MountId) -> io::Result<String> {
         let mountinfo = {
             let mountinfo_file = &mut *self.mountinfo.lock().unwrap();
 
@@ -174,7 +174,7 @@ impl MountFds {
         let path = mountinfo.split('\n').find_map(|line| {
             let mut columns = line.split(char::is_whitespace);
 
-            if columns.next()?.parse::<u64>().ok()? != mount_id {
+            if columns.next()?.parse::<MountId>().ok()? != mount_id {
                 return None;
             }
 
