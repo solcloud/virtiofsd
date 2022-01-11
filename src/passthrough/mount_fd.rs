@@ -2,7 +2,7 @@
 // found in the LICENSE-BSD-3-Clause file.
 
 use crate::passthrough::stat::{statx, MountId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -33,6 +33,9 @@ pub struct MountFds {
 
     /// An optional prefix to strip from all mount points in mountinfo
     mountprefix: Option<String>,
+
+    /// Set of filesystems for which we have already logged file handle errors
+    error_logged: Arc<RwLock<HashSet<MountId>>>,
 }
 
 impl MountFd {
@@ -40,6 +43,45 @@ impl MountFd {
         &self.file
     }
 }
+
+/**
+ * Error object (to be used as `Result<T, MPRError>`) for mount-point-related errors (hence MPR).
+ * Includes a description (that is auto-generated from the `io::Error` at first), which can be
+ * overridden with `MPRError::set_desc()`, or given a prefix with `MPRError::prefix()`.
+ *
+ * The full description can be retrieved through the `Display` trait implementation (or the
+ * auto-derived `ToString`).
+ *
+ * `MPRError` objects should generally be logged at some point, because they may indicate an error
+ * in the user's configuration or a bug in virtiofsd.  However, we only want to log them once per
+ * filesystem, and so they can be silenced (setting `silent` to true if we know that we have
+ * already logged an error for the respective filesystem) and then should not be logged.
+ *
+ * Naturally, a "mount-point-related" error should be associated with some mount point, which is
+ * reflected in `fs_mount_id` and `fs_mount_root`.  Setting these values will improve the error
+ * description, because the `Display` implementation will prepend these values to the returned
+ * string.
+ *
+ * To achieve this association, `MPRError` objects should be created through
+ * `MountFds::error_for()`, which obtains the mount root path for the given mount ID, and will thus
+ * try to not only set `fs_mount_id`, but `fs_mount_root` also.  `MountFds::error_for()` will also
+ * take care to set `silent` as appropriate.
+ *
+ * (Sometimes, though, we know an error is associated with a mount point, but we do not know with
+ * which one.  That is why the `fs_mount_id` field is optional.)
+ */
+#[derive(Debug)]
+pub struct MPRError {
+    io: io::Error,
+    description: String,
+    silent: bool,
+
+    fs_mount_id: Option<MountId>,
+    fs_mount_root: Option<String>,
+}
+
+/// Type alias for convenience
+pub type MPRResult<T> = Result<T, MPRError>;
 
 impl Drop for MountFd {
     fn drop(&mut self) {
@@ -64,12 +106,104 @@ impl Drop for MountFd {
     }
 }
 
+impl<E: ToString + Into<io::Error>> From<E> for MPRError {
+    /// Convert any stringifyable error object that can be converted to an `io::Error` to an
+    /// `MPRError`.  Note that `fs_mount_id` and `fs_mount_root` are not set, so this `MPRError`
+    /// object is not associated with any mount point.
+    /// The initial description is taken from the original error object.
+    fn from(err: E) -> Self {
+        let description = err.to_string();
+        MPRError {
+            io: err.into(),
+            description,
+            silent: false,
+
+            fs_mount_id: None,
+            fs_mount_root: None,
+        }
+    }
+}
+
+impl MPRError {
+    /// Override the current description
+    #[must_use]
+    pub fn set_desc(mut self, s: String) -> Self {
+        self.description = s;
+        self
+    }
+
+    /// Add a prefix to the description
+    #[must_use]
+    pub fn prefix(self, s: String) -> Self {
+        let new_desc = format!("{}: {}", s, self.description);
+        self.set_desc(new_desc)
+    }
+
+    /// To give additional information to the user (when this error is logged), add the mount ID of
+    /// the filesystem associated with this error
+    #[must_use]
+    fn set_mount_id(mut self, mount_id: MountId) -> Self {
+        self.fs_mount_id = Some(mount_id);
+        self
+    }
+
+    /// To give additional information to the user (when this error is logged), add the mount root
+    /// path for the filesystem associated with this error
+    #[must_use]
+    fn set_mount_root(mut self, mount_root: String) -> Self {
+        self.fs_mount_root = Some(mount_root);
+        self
+    }
+
+    /// Mark this error as silent (i.e. not to be logged)
+    #[must_use]
+    fn silence(mut self) -> Self {
+        self.silent = true;
+        self
+    }
+
+    /// Return whether this error is silent (i.e. should not be logged)
+    pub fn silent(&self) -> bool {
+        self.silent
+    }
+
+    /// Return the `io::Error` from an `MPRError` and drop the rest
+    pub fn into_inner(self) -> io::Error {
+        self.io
+    }
+}
+
+impl std::fmt::Display for MPRError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.fs_mount_id, &self.fs_mount_root) {
+            (None, None) => write!(f, "{}", self.description),
+
+            (Some(id), None) => write!(f, "Filesystem with mount ID {}: {}", id, self.description),
+
+            (None, Some(root)) => write!(
+                f,
+                "Filesystem mounted on \"{}\": {}",
+                root, self.description
+            ),
+
+            (Some(id), Some(root)) => write!(
+                f,
+                "Filesystem mounted on \"{}\" (mount ID: {}): {}",
+                root, id, self.description
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MPRError {}
+
 impl MountFds {
     pub fn new(mountinfo: File, mountprefix: Option<String>) -> Self {
         MountFds {
             map: Default::default(),
             mountinfo: Mutex::new(mountinfo),
             mountprefix,
+            error_logged: Default::default(),
         }
     }
 
@@ -200,6 +334,46 @@ impl MountFds {
             }
 
             None => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+        }
+    }
+
+    /// Generate an `MPRError` object for the given `mount_id`, and silence it if we have already
+    /// generated such an object for that `mount_id`.
+    /// (Called `..._nolookup`, because in contrast to `MountFds::error_for()`, this method will
+    /// not try to look up the respective mount root path, and so is safe to call when such a
+    /// lookup would be unwise.)
+    fn error_for_nolookup<E: ToString + Into<io::Error>>(
+        &self,
+        mount_id: MountId,
+        err: E,
+    ) -> MPRError {
+        let err = MPRError::from(err).set_mount_id(mount_id);
+
+        if self.error_logged.read().unwrap().contains(&mount_id) {
+            err.silence()
+        } else {
+            self.error_logged.write().unwrap().insert(mount_id);
+            err
+        }
+    }
+
+    /// Call `self.error_for_nolookup()`, and if the `MPRError` object is not silenced, try to
+    /// obtain the mount root path for the given `mount_id` and add it to the error object.
+    /// (Note: DO NOT call this method from `MountFds::get_mount_root()`, because that may lead to
+    /// an infinite loop.)
+    pub fn error_for<E: ToString + Into<io::Error>>(&self, mount_id: MountId, err: E) -> MPRError {
+        let err = self.error_for_nolookup(mount_id, err);
+
+        if err.silent() {
+            // No need to add more information
+            err
+        } else {
+            // This just adds some information, so ignore errors
+            if let Ok(mount_root) = self.get_mount_root(mount_id) {
+                err.set_mount_root(mount_root)
+            } else {
+                err
+            }
         }
     }
 }
