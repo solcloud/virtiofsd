@@ -57,12 +57,6 @@ enum Error {
     HandleEventNotEpollIn,
     /// Failed to handle unknown event.
     HandleEventUnknownEvent,
-    /// Invalid compat argument found on the command line.
-    InvalidCompatArgument,
-    /// Invalid compat value found on the command line.
-    InvalidCompatValue,
-    /// Invalid xattr map compat argument found on the command line.
-    InvalidXattrMap,
     /// Iterating through the queue failed.
     IterateQueue,
     /// No memory configured.
@@ -560,37 +554,54 @@ struct Opt {
     _compat_foreground: bool,
 }
 
-fn parse_compat(opt: Opt) -> Result<Opt> {
-    fn parse_tuple(opt: &mut Opt, tuple: &str) -> Result<()> {
+fn parse_compat(opt: Opt) -> Opt {
+    use structopt::clap::{Error, ErrorKind};
+    fn value_error(arg: &str, value: &str) -> ! {
+        Error::with_description(
+            format!("Invalid compat value '{}' for '-o {}'", value, arg).as_str(),
+            ErrorKind::InvalidValue,
+        )
+        .exit()
+    }
+    fn argument_error(arg: &str) -> ! {
+        Error::with_description(
+            format!("Invalid compat argument '-o {}'", arg).as_str(),
+            ErrorKind::UnknownArgument,
+        )
+        .exit()
+    }
+
+    fn parse_tuple(opt: &mut Opt, tuple: &str) {
         match tuple.split('=').collect::<Vec<&str>>()[..] {
             ["xattrmap", value] => {
-                opt.xattrmap = Some(XattrMap::try_from(value).map_err(|_| Error::InvalidXattrMap)?)
+                opt.xattrmap = Some(
+                    XattrMap::try_from(value).unwrap_or_else(|_| value_error("xattrmap", value)),
+                )
             }
             ["cache", value] => match value {
                 "auto" => opt.cache = CachePolicy::Auto,
                 "always" => opt.cache = CachePolicy::Always,
                 "none" => opt.cache = CachePolicy::Never,
-                _ => return Err(Error::InvalidCompatValue),
+                _ => value_error("cache", value),
             },
             ["loglevel", value] => match value {
                 "debug" => opt.log_level = LogLevel::Debug,
                 "info" => opt.log_level = LogLevel::Info,
                 "warn" => opt.log_level = LogLevel::Warn,
                 "err" => opt.log_level = LogLevel::Error,
-                _ => return Err(Error::InvalidCompatValue),
+                _ => value_error("loglevel", value),
             },
             ["sandbox", value] => match value {
                 "namespace" => opt.sandbox = SandboxMode::Namespace,
                 "chroot" => opt.sandbox = SandboxMode::Chroot,
-                _ => return Err(Error::InvalidCompatValue),
+                _ => value_error("sandbox", value),
             },
             ["source", value] => opt.shared_dir = Some(value.to_string()),
-            _ => return Err(Error::InvalidCompatArgument),
+            _ => argument_error(tuple),
         }
-        Ok(())
     }
 
-    fn parse_single(opt: &mut Opt, option: &str) -> Result<()> {
+    fn parse_single(opt: &mut Opt, option: &str) {
         match option {
             "xattr" => opt.xattr = true,
             "no_xattr" => opt.xattr = false,
@@ -602,9 +613,8 @@ fn parse_compat(opt: Opt) -> Result<Opt> {
             "no_allow_direct_io" => opt.allow_direct_io = false,
             "announce_submounts" => opt.announce_submounts = true,
             "no_posix_lock" | "no_flock" => (),
-            _ => return Err(Error::InvalidCompatArgument),
+            _ => argument_error(option),
         }
-        Ok(())
     }
 
     let mut clean_opt = opt.clone();
@@ -613,15 +623,15 @@ fn parse_compat(opt: Opt) -> Result<Opt> {
         for line in compat_options {
             for option in line.to_string().split(',') {
                 if option.contains('=') {
-                    parse_tuple(&mut clean_opt, option)?;
+                    parse_tuple(&mut clean_opt, option);
                 } else {
-                    parse_single(&mut clean_opt, option)?;
+                    parse_single(&mut clean_opt, option);
                 }
             }
         }
     }
 
-    Ok(clean_opt)
+    clean_opt
 }
 
 fn print_capabilities() {
@@ -682,7 +692,7 @@ fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode) {
 }
 
 fn main() {
-    let opt = parse_compat(Opt::from_args()).expect("invalid compat argument");
+    let opt = parse_compat(Opt::from_args());
 
     if opt.print_capabilities {
         print_capabilities();
