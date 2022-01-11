@@ -9,7 +9,6 @@ use passthrough::xattrmap::XattrMap;
 use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
-use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::{env, error, fmt, io, process};
 
@@ -80,35 +79,6 @@ impl error::Error for Error {}
 impl convert::From<Error> for io::Error {
     fn from(e: Error) -> Self {
         io::Error::new(io::ErrorKind::Other, e)
-    }
-}
-
-#[derive(Clone, Debug)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl FromStr for LogLevel {
-    type Err = &'static str;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "error" => Ok(LogLevel::Error),
-            "warn" => Ok(LogLevel::Warn),
-            "info" => Ok(LogLevel::Info),
-            "debug" => Ok(LogLevel::Debug),
-            "trace" => Ok(LogLevel::Trace),
-            _ => Err("Unknown log level"),
-        }
     }
 }
 
@@ -534,7 +504,7 @@ struct Opt {
 
     /// Log level (error, warn, info, debug, trace)
     #[structopt(long = "log-level", default_value = "info")]
-    log_level: LogLevel,
+    log_level: LevelFilter,
 
     /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
     #[structopt(long = "rlimit-nofile")]
@@ -585,10 +555,10 @@ fn parse_compat(opt: Opt) -> Opt {
                 _ => value_error("cache", value),
             },
             ["loglevel", value] => match value {
-                "debug" => opt.log_level = LogLevel::Debug,
-                "info" => opt.log_level = LogLevel::Info,
-                "warn" => opt.log_level = LogLevel::Warn,
-                "err" => opt.log_level = LogLevel::Error,
+                "debug" => opt.log_level = LevelFilter::Debug,
+                "info" => opt.log_level = LevelFilter::Info,
+                "warn" => opt.log_level = LevelFilter::Warn,
+                "err" => opt.log_level = LevelFilter::Error,
                 _ => value_error("loglevel", value),
             },
             ["sandbox", value] => match value {
@@ -640,7 +610,7 @@ fn print_capabilities() {
     println!("}}");
 }
 
-fn initialize_logging(log_level: &LogLevel) {
+fn initialize_logging(log_level: &LevelFilter) {
     match env::var("RUST_LOG") {
         Ok(_) => {}
         Err(_) => env::set_var("RUST_LOG", log_level.to_string()),
@@ -700,7 +670,7 @@ fn main() {
     }
 
     if opt.compat_debug {
-        initialize_logging(&LogLevel::Debug)
+        initialize_logging(&LevelFilter::Debug)
     } else {
         initialize_logging(&opt.log_level)
     }
