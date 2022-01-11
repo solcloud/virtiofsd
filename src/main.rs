@@ -506,6 +506,10 @@ struct Opt {
     #[structopt(long = "log-level", default_value = "info")]
     log_level: LevelFilter,
 
+    /// Log to syslog (default stderr)
+    #[structopt(long)]
+    syslog: bool,
+
     /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
     #[structopt(long = "rlimit-nofile")]
     rlimit_nofile: Option<u64>,
@@ -610,12 +614,28 @@ fn print_capabilities() {
     println!("}}");
 }
 
-fn initialize_logging(log_level: &LevelFilter) {
-    match env::var("RUST_LOG") {
-        Ok(_) => {}
-        Err(_) => env::set_var("RUST_LOG", log_level.to_string()),
+fn set_default_logger(log_level: LevelFilter) {
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", log_level.to_string());
     }
     env_logger::init();
+}
+
+fn initialize_logging(opt: &Opt) {
+    let log_level = if opt.compat_debug {
+        LevelFilter::Debug
+    } else {
+        opt.log_level
+    };
+
+    if opt.syslog {
+        if let Err(e) = syslog::init(syslog::Facility::LOG_USER, log_level, None) {
+            set_default_logger(log_level);
+            warn!("can't enable syslog: {}", e);
+        }
+    } else {
+        set_default_logger(log_level);
+    }
 }
 
 fn drop_parent_capabilities() {
@@ -669,11 +689,7 @@ fn main() {
         return;
     }
 
-    if opt.compat_debug {
-        initialize_logging(&LevelFilter::Debug)
-    } else {
-        initialize_logging(&opt.log_level)
-    }
+    initialize_logging(&opt);
 
     let shared_dir = match opt.shared_dir.as_ref() {
         Some(s) => s,
@@ -796,7 +812,7 @@ fn main() {
     // Must happen before we start the thread pool
     match opt.seccomp {
         SeccompAction::Allow => {}
-        _ => enable_seccomp(opt.seccomp).unwrap(),
+        _ => enable_seccomp(opt.seccomp, opt.syslog).unwrap(),
     }
 
     drop_child_capabilities(opt.inode_file_handles);
