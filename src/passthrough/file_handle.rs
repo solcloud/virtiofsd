@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use crate::passthrough::mount_fd::{MountFd, MountFds};
+use crate::passthrough::mount_fd::{MPRResult, MountFd, MountFds};
 use crate::passthrough::stat::MountId;
 use std::ffi::CStr;
 use std::fs::File;
@@ -113,7 +113,7 @@ impl FileHandle {
         &self,
         mount_fds: &MountFds,
         reopen_fd: F,
-    ) -> io::Result<OpenableFileHandle>
+    ) -> MPRResult<OpenableFileHandle>
     where
         F: FnOnce(RawFd, libc::c_int) -> io::Result<File>,
     {

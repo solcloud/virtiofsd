@@ -802,9 +802,12 @@ impl PassthroughFs {
             data.inode
         } else {
             let file_or_handle = if let Some(h) = handle.as_ref() {
-                FileOrHandle::Handle(h.to_openable(&self.mount_fds, |fd, flags| {
-                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                })?)
+                FileOrHandle::Handle(
+                    h.to_openable(&self.mount_fds, |fd, flags| {
+                        reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+                    })
+                    .map_err(|e| e.into_inner())?,
+                )
             } else {
                 FileOrHandle::File(path_fd)
             };
@@ -1030,9 +1033,12 @@ impl FileSystem for PassthroughFs {
         let st = self.stat(&path_fd, None)?;
 
         let file_or_handle = if let Some(h) = handle.as_ref() {
-            FileOrHandle::Handle(h.to_openable(&self.mount_fds, |fd, flags| {
-                reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-            })?)
+            FileOrHandle::Handle(
+                h.to_openable(&self.mount_fds, |fd, flags| {
+                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+                })
+                .map_err(|e| e.into_inner())?,
+            )
         } else {
             FileOrHandle::File(path_fd)
         };

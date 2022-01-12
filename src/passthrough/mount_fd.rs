@@ -207,7 +207,7 @@ impl MountFds {
         }
     }
 
-    pub fn get<F>(&self, mount_id: MountId, reopen_fd: F) -> io::Result<Arc<MountFd>>
+    pub fn get<F>(&self, mount_id: MountId, reopen_fd: F) -> MPRResult<Arc<MountFd>>
     where
         F: FnOnce(RawFd, libc::c_int) -> io::Result<File>,
     {
@@ -236,32 +236,62 @@ impl MountFds {
             // [1] While mount points are commonly directories, it is entirely possible for a
             //     filesystem's root inode to be a regular or even special file.
             let mount_point = self.get_mount_root(mount_id)?;
-            let c_mount_point = CString::new(mount_point)?;
+
+            // Clone `mount_point` so we can still use it in error messages
+            let c_mount_point = CString::new(mount_point.clone()).map_err(|e| {
+                self.error_for(mount_id, e).prefix(format!(
+                    "Failed to convert \"{}\" to a CString",
+                    mount_point
+                ))
+            })?;
+
             let mount_point_fd = unsafe { libc::open(c_mount_point.as_ptr(), libc::O_PATH) };
             if mount_point_fd < 0 {
-                return Err(io::Error::last_os_error());
+                return Err(self
+                    .error_for(mount_id, io::Error::last_os_error())
+                    .prefix(format!("Failed to open mount point \"{}\"", mount_point)));
             }
 
             // Safe because we have just opened this FD
             let mount_point_path = unsafe { File::from_raw_fd(mount_point_fd) };
 
             // Ensure that `mount_point_path` refers to an inode with the mount ID we need
-            let stx = statx(&mount_point_path, None)?;
+            let stx = statx(&mount_point_path, None).map_err(|e| {
+                self.error_for(mount_id, e)
+                    .prefix(format!("Failed to stat mount point \"{}\"", mount_point))
+            })?;
+
             if stx.mnt_id != mount_id {
-                return Err(io::Error::from_raw_os_error(libc::EIO));
+                return Err(self
+                    .error_for(mount_id, io::Error::from_raw_os_error(libc::EIO))
+                    .set_desc(format!(
+                        "Mount point's ({}) mount ID ({}) does not match expected value ({})",
+                        mount_point, stx.mnt_id, mount_id
+                    )));
             }
 
             // Ensure that we can safely reopen `mount_point_path` with `O_RDONLY`
             let file_type = stx.st.st_mode & libc::S_IFMT;
             if file_type != libc::S_IFREG && file_type != libc::S_IFDIR {
-                return Err(io::Error::from_raw_os_error(libc::EIO));
+                return Err(self
+                    .error_for(mount_id, io::Error::from_raw_os_error(libc::EIO))
+                    .set_desc(format!(
+                        "Mount point \"{}\" is not a regular file or directory",
+                        mount_point
+                    )));
             }
 
             // Now that we know that this is a regular file or directory, really open it
             let file = reopen_fd(
                 mount_point_path.as_raw_fd(),
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )?;
+            )
+            .map_err(|e| {
+                self.error_for(mount_id, e).prefix(format!(
+                    "Failed to reopen mount point \"{}\" for reading",
+                    mount_point
+                ))
+            })?;
 
             let mut mount_fds_locked = self.map.write().unwrap();
 
@@ -293,14 +323,20 @@ impl MountFds {
     }
 
     /// Given a mount ID, return the mount root path (by reading `/proc/self/mountinfo`)
-    fn get_mount_root(&self, mount_id: MountId) -> io::Result<String> {
+    fn get_mount_root(&self, mount_id: MountId) -> MPRResult<String> {
         let mountinfo = {
             let mountinfo_file = &mut *self.mountinfo.lock().unwrap();
 
-            mountinfo_file.seek(SeekFrom::Start(0))?;
+            mountinfo_file.seek(SeekFrom::Start(0)).map_err(|e| {
+                self.error_for_nolookup(mount_id, e)
+                    .prefix("Failed to access /proc/self/mountinfo".into())
+            })?;
 
             let mut mountinfo = String::new();
-            mountinfo_file.read_to_string(&mut mountinfo)?;
+            mountinfo_file.read_to_string(&mut mountinfo).map_err(|e| {
+                self.error_for_nolookup(mount_id, e)
+                    .prefix("Failed to read /proc/self/mountinfo".into())
+            })?;
 
             mountinfo
         };
@@ -333,7 +369,12 @@ impl MountFds {
                 }
             }
 
-            None => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+            None => Err(self
+                .error_for_nolookup(mount_id, io::Error::from_raw_os_error(libc::EINVAL))
+                .set_desc(format!(
+                    "Failed to find mount root for mount ID {}",
+                    mount_id
+                ))),
         }
     }
 
