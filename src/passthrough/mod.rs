@@ -806,7 +806,12 @@ impl PassthroughFs {
                     h.to_openable(&self.mount_fds, |fd, flags| {
                         reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
                     })
-                    .map_err(|e| e.into_inner())?,
+                    .map_err(|e| {
+                        if !e.silent() {
+                            error!("{}", e);
+                        }
+                        e.into_inner()
+                    })?,
                 )
             } else {
                 FileOrHandle::File(path_fd)
@@ -1037,7 +1042,12 @@ impl FileSystem for PassthroughFs {
                 h.to_openable(&self.mount_fds, |fd, flags| {
                     reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
                 })
-                .map_err(|e| e.into_inner())?,
+                .map_err(|e| {
+                    if !e.silent() {
+                        error!("{}", e);
+                    }
+                    e.into_inner()
+                })?,
             )
         } else {
             FileOrHandle::File(path_fd)
