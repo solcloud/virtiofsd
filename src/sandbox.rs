@@ -342,18 +342,24 @@ impl Sandbox {
         Ok(())
     }
 
-    /// Sets the limit of open files to the max possible.
+    /// Sets the limit of open files to the optionally configured value, or to the max possible
+    /// otherwise.
     fn setup_nofile_rlimit(&self) -> Result<(), Error> {
-        let rlimit_nofile = if let Some(rlimit_nofile) = self.rlimit_nofile {
-            rlimit_nofile
-        } else {
-            // /proc/sys/fs/nr_open is a sysctl file that shows the maximum number
-            // of file-handles a process can allocate.
-            let path = "/proc/sys/fs/nr_open";
-            let max_str = fs::read_to_string(path).map_err(Error::ReadProc)?;
-            max_str.trim().parse().map_err(Error::InvalidNrOpen)?
+        let rlimit_nofile = match self.rlimit_nofile {
+            Some(rlimit_nofile) => rlimit_nofile,
+            None => {
+                // /proc/sys/fs/nr_open is a sysctl file that shows the maximum number
+                // of file-handles a process can allocate.
+                let path = "/proc/sys/fs/nr_open";
+                let max_str = fs::read_to_string(path).map_err(Error::ReadProc)?;
+                max_str.trim().parse().map_err(Error::InvalidNrOpen)?
+            }
         };
+        self.setup_nofile_rlimit_to(rlimit_nofile)
+    }
 
+    /// Sets the limit of open files to the given value.
+    fn setup_nofile_rlimit_to(&self, rlimit_nofile: u64) -> Result<(), Error> {
         let limit = libc::rlimit {
             rlim_cur: rlimit_nofile,
             rlim_max: rlimit_nofile,
@@ -403,6 +409,9 @@ impl Sandbox {
     }
 
     pub fn enter_chroot(&mut self) -> Result<Option<i32>, Error> {
+        if let Some(rlimit_nofile) = self.rlimit_nofile {
+            self.setup_nofile_rlimit_to(rlimit_nofile)?;
+        }
         let c_proc_self_fd = CString::new("/proc/self/fd").unwrap();
         let proc_self_fd = unsafe { libc::open(c_proc_self_fd.as_ptr(), libc::O_PATH) };
         if proc_self_fd < 0 {
