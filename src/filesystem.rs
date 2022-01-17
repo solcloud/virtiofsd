@@ -1085,6 +1085,14 @@ pub trait FileSystem {
         Err(io::Error::from_raw_os_error(libc::ENOSYS))
     }
 
+    /// Synchronize the filesystem containing the file referenced by `inode`.  When running with
+    /// --announce-submounts, `syncfs` is called once per submount that is to be synced.  When
+    /// running without--announce-submounts, `syncfs` is called on the root mount, but all submounts
+    /// need to be synced, too.
+    fn syncfs(&self, _ctx: Context, inode: Self::Inode) -> io::Result<()> {
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+
     /// TODO: support this
     fn getlk(&self) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(libc::ENOSYS))

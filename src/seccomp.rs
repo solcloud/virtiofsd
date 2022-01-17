@@ -151,6 +151,7 @@ pub fn enable_seccomp(action: SeccompAction, allow_remote_logging: bool) -> Resu
     allow_syscall!(ctx, libc::SYS_sigaltstack);
     allow_syscall!(ctx, libc::SYS_statx);
     allow_syscall!(ctx, libc::SYS_symlinkat);
+    allow_syscall!(ctx, libc::SYS_syncfs);
     #[cfg(target_arch = "x86_64")]
     allow_syscall!(ctx, libc::SYS_time); // Rarely needed, except on static builds
     allow_syscall!(ctx, libc::SYS_tgkill);

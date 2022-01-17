@@ -133,6 +133,7 @@ impl<F: FileSystem + Sync> Server<F> {
             x if x == Opcode::CopyFileRange as u32 => self.copyfilerange(in_header, r, w),
             x if x == Opcode::SetupMapping as u32 => self.setupmapping(in_header, r, w, vu_req),
             x if x == Opcode::RemoveMapping as u32 => self.removemapping(in_header, r, w, vu_req),
+            x if x == Opcode::Syncfs as u32 => self.syncfs(in_header, w),
             _ => reply_error(
                 io::Error::from_raw_os_error(libc::ENOSYS),
                 in_header.unique,
@@ -1428,6 +1429,16 @@ impl<F: FileSystem + Sync> Server<F> {
 
                 reply_ok(Some(out), None, in_header.unique, w)
             }
+            Err(e) => reply_error(e, in_header.unique, w),
+        }
+    }
+
+    fn syncfs(&self, in_header: InHeader, w: Writer) -> Result<usize> {
+        match self
+            .fs
+            .syncfs(Context::from(in_header), in_header.nodeid.into())
+        {
+            Ok(()) => reply_ok(None::<u8>, None, in_header.unique, w),
             Err(e) => reply_error(e, in_header.unique, w),
         }
     }
