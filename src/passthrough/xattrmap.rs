@@ -44,6 +44,7 @@
 //! | prefix | The value of `key` is prepended to xattrs originating from the client (i.e., `{get,set,remove}xattr()`). The value of `prepend` is stripped from the server's reply to `listxattr()`. |
 //! | ok | If the xattr originating from the client is prefixed with `key`, or if an xattr in a server reply is prefixed with `prepend` it passes through unchanged. |
 //! | bad | If the xattr originating from the client is prefixed with `key` it is denied with `EPERM`. If the xattr in a server reply is prefixed with `prepend` it is hidden from the client and not included in the reply. |
+//! | unsupported | If a client tries to use a name matching 'key' it's denied using ENOTSUP; when the server passes an attribute name matching 'prepend' it's hidden.  In many ways its use is very like 'ok' as either an explicit terminator or for special handling of certain patterns. |
 //!
 //! `ok` and `bad` can both be used as simple terminators for an xattrmap to
 //! satisfy the expectation that every xattrmap has a terminator. For example,
@@ -213,6 +214,7 @@ enum Type {
     Prefix,
     Okay,
     Bad,
+    Unsupported,
     Map,
 }
 
@@ -224,6 +226,7 @@ impl Type {
             b"prefix" => Type::Prefix,
             b"ok" => Type::Okay,
             b"bad" => Type::Bad,
+            b"unsupported" => Type::Unsupported,
             b"map" => Type::Map,
             _ => {
                 return Err(ErrorKind::InvalidType {
@@ -300,7 +303,7 @@ impl Rule {
                 key: CString::new(next_token()?).unwrap(),
                 prepend: CString::new(next_token()?).unwrap(),
             },
-            Type::Prefix | Type::Okay | Type::Bad => {
+            Type::Prefix | Type::Okay | Type::Bad | Type::Unsupported => {
                 let scope = Scope::from_bytes(next_token()?)?;
 
                 Rule {
@@ -324,6 +327,9 @@ pub enum AppliedRule<'a> {
 
     /// Server should return EPERM (i.e., this matched on a `bad` rule).
     Deny,
+
+    /// Server should return ENOTSUP (i.e., this matched on a `unsupported` rule).
+    Unsupported,
 }
 
 /// A collection of well-formed xattr translation rules.
@@ -347,6 +353,7 @@ impl XattrMap {
         Ok(match rule.type_ {
             Type::Okay => AppliedRule::Pass(Cow::Borrowed(xattr_name)),
             Type::Bad => AppliedRule::Deny,
+            Type::Unsupported => AppliedRule::Unsupported,
             Type::Map | Type::Prefix => {
                 let mut concat = rule.prepend.as_bytes().to_vec();
                 concat.extend_from_slice(xattr_name.to_bytes());
@@ -371,7 +378,7 @@ impl XattrMap {
             let rule = self.find_rule(Scope::SERVER, xattr_name)?;
 
             let processed = match rule.type_ {
-                Type::Bad => continue, // hide this from the client
+                Type::Bad | Type::Unsupported => continue, // hide this from the client
                 Type::Okay => xattr_name,
                 Type::Map | Type::Prefix => &xattr_name[rule.prepend.as_bytes().len()..], // strip prefix
             };
@@ -641,6 +648,31 @@ mod tests {
     }
 
     #[test]
+    fn test_rule_unsupported_hides_xattr_names_from_client() {
+        let input = b"security.secret\x00boring_attr".to_vec();
+        let map = XattrMap {
+            rules: vec![
+                Rule {
+                    type_: Type::Unsupported,
+                    scope: Scope::SERVER,
+                    key: CString::new("").unwrap(),
+                    prepend: CString::new("security.").unwrap(),
+                },
+                Rule {
+                    type_: Type::Okay,
+                    scope: Scope::CLIENT | Scope::SERVER,
+                    key: CString::new("").unwrap(),
+                    prepend: CString::new("").unwrap(),
+                },
+            ],
+        };
+
+        let actual = map.map_server_xattrlist(input).unwrap();
+        let expected = b"boring_attr\x00";
+        assert_eq!(actual.as_slice(), expected);
+    }
+
+    #[test]
     fn test_rule_bad_denies_the_client_request() {
         let map = XattrMap {
             rules: vec![Rule {
@@ -654,6 +686,23 @@ mod tests {
         let input = CString::new("virtiofs.").unwrap();
         let actual = map.map_client_xattr(&input).unwrap();
         let expected = AppliedRule::Deny;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_rule_unsupported_not_support_the_client_request() {
+        let map = XattrMap {
+            rules: vec![Rule {
+                type_: Type::Unsupported,
+                scope: Scope::CLIENT,
+                key: CString::new("").unwrap(),
+                prepend: CString::new("").unwrap(),
+            }],
+        };
+
+        let input = CString::new("virtiofs.").unwrap();
+        let actual = map.map_client_xattr(&input).unwrap();
+        let expected = AppliedRule::Unsupported;
         assert_eq!(actual, expected);
     }
 
