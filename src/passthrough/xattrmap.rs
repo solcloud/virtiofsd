@@ -31,7 +31,7 @@
 //!
 //! 1. `:type:scope:key:prepend:`
 //! 2. `:map:key:prepend:` - this is just syntactic sugar for expressing a common
-//!    rule. It is equivalent to `:prefix:all:prepend:prepend`.
+//!    rule. It is equivalent to `:prefix:all:key:prepend`.
 //!
 //! An xattrmap is just a series of these rules separated by whitespace. Each rule
 //! can have its own delimiter. The colon (`:`) was just used here as an arbitary
