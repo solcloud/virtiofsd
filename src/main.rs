@@ -777,11 +777,19 @@ fn main() {
         error!("Error entering sandbox: {}", error);
         process::exit(1)
     }) {
+        // `enter()` returns the PID of the child to the parent, if it forked.
         Some(child_pid) => {
             drop_parent_capabilities();
-            unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
-            return;
+            let mut status = 0;
+            // On success, `libc::waitpid()` returns the PID of the child.
+            if unsafe { libc::waitpid(child_pid, &mut status, 0) } != child_pid {
+                error!("Error during waitpid()");
+                process::exit(1);
+            }
+            process::exit(libc::WEXITSTATUS(status));
         }
+        // `enter()` returns `None` to the process that should proceed (i.e. to the child, if it
+        // forked).
         None => passthrough::Config {
             cache_policy: opt.cache,
             root_dir: sandbox.get_root_dir(),
