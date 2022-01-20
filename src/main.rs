@@ -410,6 +410,7 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
     Ok(match src {
         "none" => SeccompAction::Allow, // i.e. no seccomp
         "kill" => SeccompAction::Kill,
+        "log" => SeccompAction::Log,
         "trap" => SeccompAction::Trap,
         _ => return Err("Matching variant not found"),
     })
