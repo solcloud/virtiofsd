@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use seccomp_sys::{
+use libseccomp_sys::{
     seccomp_init, seccomp_load, seccomp_release, seccomp_rule_add, SCMP_ACT_ALLOW,
     SCMP_ACT_KILL_PROCESS, SCMP_ACT_TRAP,
 };
