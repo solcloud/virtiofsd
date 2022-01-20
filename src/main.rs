@@ -9,7 +9,6 @@ use passthrough::xattrmap::XattrMap;
 use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
-use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::{env, error, fmt, io, process};
 
@@ -57,12 +56,6 @@ enum Error {
     HandleEventNotEpollIn,
     /// Failed to handle unknown event.
     HandleEventUnknownEvent,
-    /// Invalid compat argument found on the command line.
-    InvalidCompatArgument,
-    /// Invalid compat value found on the command line.
-    InvalidCompatValue,
-    /// Invalid xattr map compat argument found on the command line.
-    InvalidXattrMap,
     /// Iterating through the queue failed.
     IterateQueue,
     /// No memory configured.
@@ -86,35 +79,6 @@ impl error::Error for Error {}
 impl convert::From<Error> for io::Error {
     fn from(e: Error) -> Self {
         io::Error::new(io::ErrorKind::Other, e)
-    }
-}
-
-#[derive(Clone, Debug)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl FromStr for LogLevel {
-    type Err = &'static str;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "error" => Ok(LogLevel::Error),
-            "warn" => Ok(LogLevel::Warn),
-            "info" => Ok(LogLevel::Info),
-            "debug" => Ok(LogLevel::Debug),
-            "trace" => Ok(LogLevel::Trace),
-            _ => Err("Unknown log level"),
-        }
     }
 }
 
@@ -540,7 +504,11 @@ struct Opt {
 
     /// Log level (error, warn, info, debug, trace)
     #[structopt(long = "log-level", default_value = "info")]
-    log_level: LogLevel,
+    log_level: LevelFilter,
+
+    /// Log to syslog (default stderr)
+    #[structopt(long)]
+    syslog: bool,
 
     /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
     #[structopt(long = "rlimit-nofile")]
@@ -553,39 +521,61 @@ struct Opt {
     /// Set log level to "debug" in a compatible way with the legacy implementation
     #[structopt(short = "d")]
     compat_debug: bool,
+
+    // Set foreground operation (Deprecated)
+    // Do nothing. It is hidden from the help message to make it easier to remove it later
+    #[structopt(short = "f", hidden = true)]
+    _compat_foreground: bool,
 }
 
-fn parse_compat(opt: Opt) -> Result<Opt> {
-    fn parse_tuple(opt: &mut Opt, tuple: &str) -> Result<()> {
+fn parse_compat(opt: Opt) -> Opt {
+    use structopt::clap::{Error, ErrorKind};
+    fn value_error(arg: &str, value: &str) -> ! {
+        Error::with_description(
+            format!("Invalid compat value '{}' for '-o {}'", value, arg).as_str(),
+            ErrorKind::InvalidValue,
+        )
+        .exit()
+    }
+    fn argument_error(arg: &str) -> ! {
+        Error::with_description(
+            format!("Invalid compat argument '-o {}'", arg).as_str(),
+            ErrorKind::UnknownArgument,
+        )
+        .exit()
+    }
+
+    fn parse_tuple(opt: &mut Opt, tuple: &str) {
         match tuple.split('=').collect::<Vec<&str>>()[..] {
             ["xattrmap", value] => {
-                opt.xattrmap = Some(XattrMap::try_from(value).map_err(|_| Error::InvalidXattrMap)?)
+                opt.xattrmap = Some(
+                    XattrMap::try_from(value).unwrap_or_else(|_| value_error("xattrmap", value)),
+                )
             }
             ["cache", value] => match value {
                 "auto" => opt.cache = CachePolicy::Auto,
                 "always" => opt.cache = CachePolicy::Always,
                 "none" => opt.cache = CachePolicy::Never,
-                _ => return Err(Error::InvalidCompatValue),
+                _ => value_error("cache", value),
             },
             ["loglevel", value] => match value {
-                "debug" => opt.log_level = LogLevel::Debug,
-                "info" => opt.log_level = LogLevel::Info,
-                "warn" => opt.log_level = LogLevel::Warn,
-                "err" => opt.log_level = LogLevel::Error,
-                _ => return Err(Error::InvalidCompatValue),
+                "debug" => opt.log_level = LevelFilter::Debug,
+                "info" => opt.log_level = LevelFilter::Info,
+                "warn" => opt.log_level = LevelFilter::Warn,
+                "err" => opt.log_level = LevelFilter::Error,
+                _ => value_error("loglevel", value),
             },
             ["sandbox", value] => match value {
                 "namespace" => opt.sandbox = SandboxMode::Namespace,
                 "chroot" => opt.sandbox = SandboxMode::Chroot,
-                _ => return Err(Error::InvalidCompatValue),
+                _ => value_error("sandbox", value),
             },
             ["source", value] => opt.shared_dir = Some(value.to_string()),
-            _ => return Err(Error::InvalidCompatArgument),
+            _ => argument_error(tuple),
         }
-        Ok(())
     }
 
-    fn parse_single(opt: &mut Opt, option: &str) -> Result<()> {
+    fn parse_single(opt: &mut Opt, option: &str) {
         match option {
             "xattr" => opt.xattr = true,
             "no_xattr" => opt.xattr = false,
@@ -596,9 +586,9 @@ fn parse_compat(opt: Opt) -> Result<Opt> {
             "allow_direct_io" => opt.allow_direct_io = true,
             "no_allow_direct_io" => opt.allow_direct_io = false,
             "announce_submounts" => opt.announce_submounts = true,
-            _ => return Err(Error::InvalidCompatArgument),
+            "no_posix_lock" | "no_flock" => (),
+            _ => argument_error(option),
         }
-        Ok(())
     }
 
     let mut clean_opt = opt.clone();
@@ -607,15 +597,15 @@ fn parse_compat(opt: Opt) -> Result<Opt> {
         for line in compat_options {
             for option in line.to_string().split(',') {
                 if option.contains('=') {
-                    parse_tuple(&mut clean_opt, option)?;
+                    parse_tuple(&mut clean_opt, option);
                 } else {
-                    parse_single(&mut clean_opt, option)?;
+                    parse_single(&mut clean_opt, option);
                 }
             }
         }
     }
 
-    Ok(clean_opt)
+    clean_opt
 }
 
 fn print_capabilities() {
@@ -624,12 +614,28 @@ fn print_capabilities() {
     println!("}}");
 }
 
-fn initialize_logging(log_level: &LogLevel) {
-    match env::var("RUST_LOG") {
-        Ok(_) => {}
-        Err(_) => env::set_var("RUST_LOG", log_level.to_string()),
+fn set_default_logger(log_level: LevelFilter) {
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", log_level.to_string());
     }
     env_logger::init();
+}
+
+fn initialize_logging(opt: &Opt) {
+    let log_level = if opt.compat_debug {
+        LevelFilter::Debug
+    } else {
+        opt.log_level
+    };
+
+    if opt.syslog {
+        if let Err(e) = syslog::init(syslog::Facility::LOG_USER, log_level, None) {
+            set_default_logger(log_level);
+            warn!("can't enable syslog: {}", e);
+        }
+    } else {
+        set_default_logger(log_level);
+    }
 }
 
 fn drop_parent_capabilities() {
@@ -676,18 +682,14 @@ fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode) {
 }
 
 fn main() {
-    let opt = parse_compat(Opt::from_args()).expect("invalid compat argument");
+    let opt = parse_compat(Opt::from_args());
 
     if opt.print_capabilities {
         print_capabilities();
         return;
     }
 
-    if opt.compat_debug {
-        initialize_logging(&LogLevel::Debug)
-    } else {
-        initialize_logging(&opt.log_level)
-    }
+    initialize_logging(&opt);
 
     let shared_dir = match opt.shared_dir.as_ref() {
         Some(s) => s,
@@ -810,7 +812,7 @@ fn main() {
     // Must happen before we start the thread pool
     match opt.seccomp {
         SeccompAction::Allow => {}
-        _ => enable_seccomp(opt.seccomp).unwrap(),
+        _ => enable_seccomp(opt.seccomp, opt.syslog).unwrap(),
     }
 
     drop_child_capabilities(opt.inode_file_handles);

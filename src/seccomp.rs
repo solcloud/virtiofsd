@@ -54,7 +54,7 @@ macro_rules! allow_syscall {
     };
 }
 
-pub fn enable_seccomp(action: SeccompAction) -> Result<(), Error> {
+pub fn enable_seccomp(action: SeccompAction, allow_remote_logging: bool) -> Result<(), Error> {
     let ctx = unsafe { seccomp_init(action.into()) };
     if ctx.is_null() {
         return Err(Error::InitSeccompContext);
@@ -160,6 +160,10 @@ pub fn enable_seccomp(action: SeccompAction) -> Result<(), Error> {
     allow_syscall!(ctx, libc::SYS_utimensat);
     allow_syscall!(ctx, libc::SYS_write);
     allow_syscall!(ctx, libc::SYS_writev);
+
+    if allow_remote_logging {
+        allow_syscall!(ctx, libc::SYS_sendto); // Required by syslog
+    }
 
     let ret = unsafe { seccomp_load(ctx) };
     if ret != 0 {
