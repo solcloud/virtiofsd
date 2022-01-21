@@ -21,6 +21,7 @@ use std::collections::{btree_map, BTreeMap};
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
+use std::io::ErrorKind;
 use std::mem::MaybeUninit;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::str::FromStr;
@@ -916,6 +917,7 @@ impl PassthroughFs {
         match &self.cfg.xattrmap {
             Some(map) => match map.map_client_xattr(name).expect("unterminated mapping") {
                 AppliedRule::Deny => Err(io::Error::from_raw_os_error(libc::EPERM)),
+                AppliedRule::Unsupported => Err(io::Error::from_raw_os_error(libc::ENOTSUP)),
                 AppliedRule::Pass(new_name) => Ok(new_name),
             },
             None => Ok(Cow::Borrowed(name)),
@@ -1945,7 +1947,13 @@ impl FileSystem for PassthroughFs {
 
         let mut buf = vec![0; size as usize];
 
-        let name = self.map_client_xattrname(name)?;
+        let name = self.map_client_xattrname(name).map_err(|e| {
+            if e.kind() == ErrorKind::PermissionDenied {
+                io::Error::from_raw_os_error(libc::ENODATA)
+            } else {
+                e
+            }
+        })?;
 
         let data = self
             .inodes
