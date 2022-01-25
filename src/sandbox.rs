@@ -393,6 +393,7 @@ impl Sandbox {
         match child {
             0 => {
                 // This is the child. Request to receive SIGTERM on parent's death.
+                // FIXME: Race condition: the parent process might have died already.
                 unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) };
                 if uid == 0 {
                     self.setup_nofile_rlimit()?;

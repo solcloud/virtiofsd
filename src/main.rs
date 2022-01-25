@@ -638,6 +638,21 @@ fn initialize_logging(opt: &Opt) {
     }
 }
 
+fn set_signal_handlers() {
+    use vmm_sys_util::signal;
+
+    extern "C" fn handle_signal(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+        unsafe { libc::_exit(1) };
+    }
+    let signals = vec![libc::SIGHUP, libc::SIGTERM];
+    for s in signals {
+        if let Err(e) = signal::register_signal_handler(s, handle_signal) {
+            error!("Setting signal handlers: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
 fn drop_parent_capabilities() {
     // The parent doesn't require any capabilities, as it'd be just waiting for
     // the child to exit.
@@ -690,6 +705,7 @@ fn main() {
     }
 
     initialize_logging(&opt);
+    set_signal_handlers();
 
     let shared_dir = match opt.shared_dir.as_ref() {
         Some(s) => s,
