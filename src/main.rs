@@ -410,6 +410,7 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
     Ok(match src {
         "none" => SeccompAction::Allow, // i.e. no seccomp
         "kill" => SeccompAction::Kill,
+        "log" => SeccompAction::Log,
         "trap" => SeccompAction::Trap,
         _ => return Err("Matching variant not found"),
     })
@@ -455,7 +456,7 @@ struct Opt {
     #[structopt(long, default_value = "namespace")]
     sandbox: SandboxMode,
 
-    /// Action to take when seccomp finds a not allowed syscall (allow, kill, log, trap)
+    /// Action to take when seccomp finds a not allowed syscall (none, kill, log, trap)
     #[structopt(long, parse(try_from_str = parse_seccomp), default_value = "kill")]
     seccomp: SeccompAction,
 

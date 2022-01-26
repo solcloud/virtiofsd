@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use seccomp_sys::{
+use libseccomp_sys::{
     seccomp_init, seccomp_load, seccomp_release, seccomp_rule_add, SCMP_ACT_ALLOW,
-    SCMP_ACT_KILL_PROCESS, SCMP_ACT_TRAP,
+    SCMP_ACT_KILL_PROCESS, SCMP_ACT_LOG, SCMP_ACT_TRAP,
 };
 use std::convert::TryInto;
 use std::fmt;
@@ -31,6 +31,7 @@ impl fmt::Display for Error {
 pub enum SeccompAction {
     Allow,
     Kill,
+    Log,
     Trap,
 }
 
@@ -39,6 +40,7 @@ impl From<SeccompAction> for u32 {
         match action {
             SeccompAction::Allow => SCMP_ACT_ALLOW,
             SeccompAction::Kill => SCMP_ACT_KILL_PROCESS,
+            SeccompAction::Log => SCMP_ACT_LOG,
             SeccompAction::Trap => SCMP_ACT_TRAP,
         }
     }
