@@ -28,8 +28,12 @@ pub enum Error {
     CleanMount(io::Error),
     /// Failed to create a temporary directory.
     CreateTempDir(io::Error),
+    /// Failed to drop supplemental groups.
+    DropSupplementalGroups(io::Error),
     /// Call to libc::fork returned an error.
     Fork(io::Error),
+    /// Failed to get the number of supplemental groups.
+    GetSupplementalGroups(io::Error),
     /// Error bind-mounting a directory.
     MountBind(io::Error),
     /// Failed to mount old root.
@@ -443,6 +447,22 @@ impl Sandbox {
         Ok(None)
     }
 
+    fn drop_supplemental_groups(&self) -> Result<(), Error> {
+        let ngroups = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+        if ngroups < 0 {
+            return Err(Error::GetSupplementalGroups(std::io::Error::last_os_error()));
+        } else if ngroups != 0 {
+            let ret = unsafe { libc::setgroups(0, std::ptr::null()) };
+            if ret != 0 {
+                return Err(Error::DropSupplementalGroups(
+                    std::io::Error::last_os_error(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Set up sandbox, fork and jump into it.
     ///
     /// On success, the returned value will be the PID of the child for the parent and `None` for
@@ -452,6 +472,9 @@ impl Sandbox {
         if uid != 0 && self.sandbox_mode != SandboxMode::Namespace {
             return Err(Error::SandboxModeInvalidUID);
         }
+
+        // Unconditionally drop supplemental groups for every sandbox mode.
+        self.drop_supplemental_groups()?;
 
         match self.sandbox_mode {
             SandboxMode::Namespace => self.enter_namespace(),
