@@ -919,8 +919,7 @@ impl<F: FileSystem + Sync> Server<F> {
             | FsOptions::HAS_IOCTL_DIR
             | FsOptions::ATOMIC_O_TRUNC
             | FsOptions::MAX_PAGES
-            | FsOptions::SUBMOUNTS
-            | FsOptions::HANDLE_KILLPRIV_V2;
+            | FsOptions::SUBMOUNTS;
 
         let capable = FsOptions::from_bits_truncate(flags);
 

@@ -432,7 +432,7 @@ pub trait FileSystem {
     /// The `valid` parameter indicates the fields of `attr` that may be considered valid and should
     /// be set by the file system. The content of all other fields in `attr` is undefined.
     ///
-    /// If the `FsOptions::HANDLE_KILLPRIV` was set during `init`, then the implementation is
+    /// If the `FsOptions::HANDLE_KILLPRIV_V2` was set during `init`, then the implementation is
     /// expected to reset the setuid and setgid bits if the file size or owner is being changed.
     ///
     /// This method returns the new attributes after making the modifications requested by the
