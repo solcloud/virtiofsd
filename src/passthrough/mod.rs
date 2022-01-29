@@ -755,32 +755,11 @@ impl PassthroughFs {
         // `cfg.inode_file_handles` is `Never`, we do not need this key anyway.
         let handle_altkey = handle.map(InodeAltKey::Handle);
 
-        let data = {
-            let inodes = self.inodes.read().unwrap();
+        let existing_inode =
+            Self::claim_inode(&self.inodes.read().unwrap(), handle_altkey, ids_altkey);
 
-            handle_altkey
-                .and_then(|altkey| inodes.get_alt(&altkey))
-                .or_else(|| {
-                    inodes.get_alt(&ids_altkey).filter(|data| {
-                        // When we have to fall back to looking up an inode by its inode ID, ensure
-                        // that we hit an entry that has a valid file descriptor.  Having an FD
-                        // open means that the inode cannot really be deleted until the FD is
-                        // closed, so that the inode ID remains valid until we evict the
-                        // `InodeData`.  With no FD open (and just a file handle), the inode can be
-                        // deleted while we still have our `InodeData`, and so the inode ID may be
-                        // reused by a completely different new inode.  Such inodes must be looked
-                        // up by file handle, because this handle contains a generation ID to
-                        // differentiate between the old and the new inode.
-                        matches!(data.file_or_handle, FileOrHandle::File(_))
-                    })
-                })
-                .map(Arc::clone)
-        };
-
-        let inode = if let Some(data) = data {
-            // Matches with the release store in `forget`.
-            data.refcount.fetch_add(1, Ordering::Acquire);
-            data.inode
+        let inode = if let Some(inode) = existing_inode {
+            inode
         } else {
             let file_or_handle = if let Some(h) = handle.as_ref() {
                 FileOrHandle::Handle(h.to_openable(&self.mount_fds, |fd, flags| {
@@ -790,29 +769,35 @@ impl PassthroughFs {
                 FileOrHandle::File(path_fd)
             };
 
-            // There is a possible race here where 2 threads end up adding the same file
-            // into the inode list.  However, since each of those will get a unique Inode
-            // value and unique file descriptors this shouldn't be that much of a problem.
+            // There is a possible race here where two (or more) threads end up creating an inode
+            // ID.  However, only the one in the thread that locks `self.inodes` first will be used
+            // and the others are wasted.
             let inode = self.next_inode.fetch_add(1, Ordering::Relaxed);
             let mut inodes = self.inodes.write().unwrap();
 
-            inodes.insert(
-                inode,
-                Arc::new(InodeData {
+            if let Some(inode) = Self::claim_inode(&inodes, handle_altkey, ids_altkey) {
+                // An inode was added concurrently while we did not hold a lock on `self.inodes`, so
+                // we use that instead.  `file_or_handle` will be dropped.
+                inode
+            } else {
+                inodes.insert(
                     inode,
-                    file_or_handle,
-                    refcount: AtomicU64::new(1),
-                    dev: st.st.st_dev,
-                    mnt_id: st.mnt_id,
-                    mode: st.st.st_mode,
-                }),
-            );
-            inodes.insert_alt(ids_altkey, inode);
-            if let Some(altkey) = handle_altkey {
-                inodes.insert_alt(altkey, inode);
-            }
+                    Arc::new(InodeData {
+                        inode,
+                        file_or_handle,
+                        refcount: AtomicU64::new(1),
+                        dev: st.st.st_dev,
+                        mnt_id: st.mnt_id,
+                        mode: st.st.st_mode,
+                    }),
+                );
+                inodes.insert_alt(ids_altkey, inode);
+                if let Some(altkey) = handle_altkey {
+                    inodes.insert_alt(altkey, inode);
+                }
 
-            inode
+                inode
+            }
         };
 
         Ok(Entry {
@@ -823,6 +808,54 @@ impl PassthroughFs {
             attr_timeout: self.cfg.attr_timeout,
             entry_timeout: self.cfg.entry_timeout,
         })
+    }
+
+    /// Attempts to get an inode from `inodes` and increment its refcount.  Returns the inode
+    /// number on success and `None` on failure.  Reasons for failure can be that the inode isn't
+    /// in the map or that the refcount is zero.  This function will never increment a refcount
+    /// that's already zero.
+    fn claim_inode(
+        inodes: &MultikeyBTreeMap<Inode, InodeAltKey, Arc<InodeData>>,
+        handle_altkey: Option<InodeAltKey>,
+        ids_altkey: InodeAltKey,
+    ) -> Option<Inode> {
+        let data = handle_altkey
+            .and_then(|altkey| inodes.get_alt(&altkey))
+            .or_else(|| {
+                inodes.get_alt(&ids_altkey).filter(|data| {
+                    // When we have to fall back to looking up an inode by its inode ID, ensure
+                    // that we hit an entry that has a valid file descriptor.  Having an FD
+                    // open means that the inode cannot really be deleted until the FD is
+                    // closed, so that the inode ID remains valid until we evict the
+                    // `InodeData`.  With no FD open (and just a file handle), the inode can be
+                    // deleted while we still have our `InodeData`, and so the inode ID may be
+                    // reused by a completely different new inode.  Such inodes must be looked
+                    // up by file handle, because this handle contains a generation ID to
+                    // differentiate between the old and the new inode.
+                    matches!(data.file_or_handle, FileOrHandle::File(_))
+                })
+            });
+        if let Some(data) = data {
+            // We use a CAS loop instead of `fetch_add()`, because we must never increment the
+            // refcount from zero to one.
+            let mut n = data.refcount.load(Ordering::Relaxed);
+            loop {
+                if n == 0 {
+                    return None;
+                }
+
+                match data.refcount.compare_exchange_weak(
+                    n,
+                    n + 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return Some(data.inode),
+                    Err(old) => n = old,
+                }
+            }
+        }
+        None
     }
 
     fn do_open(
@@ -971,11 +1004,13 @@ fn forget_one(
             // we don't want misbehaving clients to cause integer overflow.
             let new_count = refcount.saturating_sub(count);
 
-            // Synchronizes with the acquire load in `do_lookup`.
+            // We don't need any stronger ordering, because the refcount itself doesn't protect any
+            // data.  The `inodes` map is protected since we hold an exclusive reference (obtained
+            // from an `RwLock`).
             if data.refcount.compare_exchange(
                 refcount,
                 new_count,
-                Ordering::Release,
+                Ordering::Relaxed,
                 Ordering::Relaxed,
             ) == Ok(refcount)
             {
