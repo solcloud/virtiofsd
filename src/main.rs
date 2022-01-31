@@ -527,10 +527,9 @@ struct Opt {
     #[structopt(long)]
     no_killpriv_v2: bool,
 
-    /// Set foreground operation (deprecated)
-    // This option is a NOP
+    /// Compatibility option that has no effect (deprecated)
     #[structopt(short = "f")]
-    _compat_foreground: bool,
+    compat_foreground: bool,
 }
 
 fn parse_compat(opt: Opt) -> Opt {
@@ -707,6 +706,16 @@ fn main() {
             process::exit(1);
         }
     };
+    if opt.compat_foreground {
+        warn!("Use of deprecated flag '-f': This flag has no effect, please remove it");
+    }
+    if opt.compat_debug {
+        warn!("Use of deprecated flag '-d': Please use the '--log-level debug' option instead");
+    }
+    if opt.compat_options.is_some() {
+        warn!("Use of deprecated option format '-o': Please specify options without it (e.g., '--cache auto' instead of '-o cache=auto')");
+    }
+
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
     let xattr = if xattrmap.is_some() { true } else { opt.xattr };
@@ -734,7 +743,7 @@ fn main() {
             let old_umask = unsafe { libc::umask(umask) };
 
             let socket = opt.socket_path.as_ref().unwrap_or_else(|| {
-                println!("warning: use of deprecated parameter '--socket': Please use the '--socket-path' option instead.");
+                warn!("use of deprecated parameter '--socket': Please use the '--socket-path' option instead");
                 opt.socket.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
             });
             let listener = Listener::new(socket, true).unwrap_or_else(|error| {
