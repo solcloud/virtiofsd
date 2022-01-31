@@ -515,11 +515,11 @@ struct Opt {
     #[structopt(long = "rlimit-nofile")]
     rlimit_nofile: Option<u64>,
 
-    /// Options in a format compatible with the legacy implementation
+    /// Options in a format compatible with the legacy implementation (deprecated)
     #[structopt(short = "o")]
     compat_options: Option<Vec<String>>,
 
-    /// Set log level to "debug" in a compatible way with the legacy implementation
+    /// Set log level to "debug" (deprecated)
     #[structopt(short = "d")]
     compat_debug: bool,
 
@@ -527,9 +527,9 @@ struct Opt {
     #[structopt(long)]
     no_killpriv_v2: bool,
 
-    // Set foreground operation (Deprecated)
-    // Do nothing. It is hidden from the help message to make it easier to remove it later
-    #[structopt(short = "f", hidden = true)]
+    /// Set foreground operation (deprecated)
+    // This option is a NOP
+    #[structopt(short = "f")]
     _compat_foreground: bool,
 }
 
