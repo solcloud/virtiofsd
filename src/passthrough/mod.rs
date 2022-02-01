@@ -1085,6 +1085,8 @@ impl FileSystem for PassthroughFs {
     fn destroy(&self) {
         self.handles.write().unwrap().clear();
         self.inodes.write().unwrap().clear();
+        self.writeback.store(false, Ordering::Relaxed);
+        self.announce_submounts.store(false, Ordering::Relaxed);
     }
 
     fn statfs(&self, _ctx: Context, inode: Inode) -> io::Result<libc::statvfs64> {
