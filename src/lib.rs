@@ -10,7 +10,6 @@ pub mod file_traits;
 pub mod filesystem;
 pub mod fs_cache_req_handler;
 pub mod fuse;
-pub mod multikey;
 pub mod passthrough;
 pub mod read_dir;
 pub mod sandbox;

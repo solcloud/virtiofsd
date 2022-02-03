@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 pub mod file_handle;
+pub mod inode_store;
 pub mod mount_fd;
 pub mod stat;
 pub mod util;
@@ -14,12 +15,12 @@ use crate::filesystem::{
     SetattrValid, SetxattrFlags, ZeroCopyReader, ZeroCopyWriter,
 };
 use crate::fuse;
-use crate::multikey::MultikeyBTreeMap;
+use crate::passthrough::inode_store::{Inode, InodeData, InodeIds, InodeStore};
 use crate::passthrough::util::{ebadf, einval, is_safe_inode, openat, reopen_fd_through_proc};
 use crate::read_dir::ReadDir;
-use file_handle::{FileHandle, OpenableFileHandle};
+use file_handle::{FileHandle, FileOrHandle};
 use mount_fd::{MPRError, MountFds};
-use stat::{stat64, statx, MountId, StatExt};
+use stat::{stat64, statx, StatExt};
 use std::borrow::Cow;
 use std::collections::{btree_map, BTreeMap};
 use std::ffi::{CStr, CString};
@@ -36,102 +37,7 @@ use xattrmap::{AppliedRule, XattrMap};
 
 const EMPTY_CSTR: &[u8] = b"\0";
 
-type Inode = u64;
 type Handle = u64;
-
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
-enum InodeAltKey {
-    Ids {
-        ino: libc::ino64_t,
-        dev: libc::dev_t,
-        mnt_id: MountId,
-    },
-    Handle(FileHandle),
-}
-
-enum FileOrHandle {
-    File(File),
-    Handle(OpenableFileHandle),
-}
-
-struct InodeData {
-    inode: Inode,
-    // Most of these aren't actually files but ¯\_(ツ)_/¯.
-    file_or_handle: FileOrHandle,
-    refcount: AtomicU64,
-
-    // Required to detect submounts
-    dev: libc::dev_t,
-    mnt_id: MountId,
-
-    // File type and mode
-    mode: u32,
-}
-
-/**
- * Represents the file associated with an inode (`InodeData`).
- *
- * When obtaining such a file, it may either be a new file (the `Owned` variant), in which case the
- * object's lifetime is static, or it may reference `InodeData.file` (the `Ref` variant), in which
- * case the object's lifetime is that of the respective `InodeData` object.
- */
-enum InodeFile<'inode_lifetime> {
-    Owned(File),
-    Ref(&'inode_lifetime File),
-}
-
-impl<'a> InodeData {
-    /// Get an `O_PATH` file for this inode
-    fn get_file(&'a self) -> io::Result<InodeFile<'a>> {
-        match &self.file_or_handle {
-            FileOrHandle::File(f) => Ok(InodeFile::Ref(f)),
-            FileOrHandle::Handle(h) => {
-                let file = h.open(libc::O_PATH)?;
-                Ok(InodeFile::Owned(file))
-            }
-        }
-    }
-
-    /// Open this inode with the given flags
-    /// (always returns a new (i.e. `Owned`) file, hence the static lifetime)
-    fn open_file(&self, flags: libc::c_int, proc_self_fd: &File) -> io::Result<InodeFile<'static>> {
-        if !is_safe_inode(self.mode) {
-            return Err(ebadf());
-        }
-
-        match &self.file_or_handle {
-            FileOrHandle::File(f) => {
-                let new_file = reopen_fd_through_proc(f, flags, proc_self_fd)?;
-                Ok(InodeFile::Owned(new_file))
-            }
-            FileOrHandle::Handle(h) => {
-                let new_file = h.open(flags)?;
-                Ok(InodeFile::Owned(new_file))
-            }
-        }
-    }
-}
-
-impl InodeFile<'_> {
-    /// Create a standalone `File` object
-    fn into_file(self) -> io::Result<File> {
-        match self {
-            Self::Owned(file) => Ok(file),
-            Self::Ref(file_ref) => file_ref.try_clone(),
-        }
-    }
-}
-
-impl AsRawFd for InodeFile<'_> {
-    /// Return a file descriptor for this file
-    /// Note: This fd is only valid as long as the `InodeFile` exists.
-    fn as_raw_fd(&self) -> RawFd {
-        match self {
-            Self::Owned(file) => file.as_raw_fd(),
-            Self::Ref(file_ref) => file_ref.as_raw_fd(),
-        }
-    }
-}
 
 struct HandleData {
     inode: Inode,
@@ -494,7 +400,7 @@ pub struct PassthroughFs {
     // the `O_PATH` option so they cannot be used for reading or writing any data. See the
     // documentation of the `O_PATH` flag in `open(2)` for more details on what one can and cannot
     // do with an fd opened with this flag.
-    inodes: RwLock<MultikeyBTreeMap<Inode, InodeAltKey, Arc<InodeData>>>,
+    inodes: RwLock<InodeStore>,
     next_inode: AtomicU64,
 
     // File descriptors for open files and directories. Unlike the fds in `inodes`, these _can_ be
@@ -563,7 +469,7 @@ impl PassthroughFs {
         };
 
         let mut fs = PassthroughFs {
-            inodes: RwLock::new(MultikeyBTreeMap::new()),
+            inodes: RwLock::new(Default::default()),
             next_inode: AtomicU64::new(fuse::ROOT_ID + 1),
             handles: RwLock::new(BTreeMap::new()),
             next_handle: AtomicU64::new(0),
@@ -759,29 +665,28 @@ impl PassthroughFs {
         };
 
         let st = self.stat(&path_fd, None)?;
+
+        // Note that this will always be `None` if `cfg.inode_file_handles` is `Never`, but we only
+        // really need the handle when we do not have an `O_PATH` fd open for every inode.  So if
+        // `cfg.inode_file_handles` is `Never`, we do not need it anyway.
         let handle = self.get_file_handle_opt(&path_fd, &st)?;
 
         let mut attr_flags: u32 = 0;
 
         if st.st.st_mode & libc::S_IFMT == libc::S_IFDIR
             && self.announce_submounts.load(Ordering::Relaxed)
-            && (st.st.st_dev != p.dev || st.mnt_id != p.mnt_id)
+            && (st.st.st_dev != p.ids.dev || st.mnt_id != p.ids.mnt_id)
         {
             attr_flags |= fuse::ATTR_SUBMOUNT;
         }
 
-        let ids_altkey = InodeAltKey::Ids {
+        let ids = InodeIds {
             ino: st.st.st_ino,
             dev: st.st.st_dev,
             mnt_id: st.mnt_id,
         };
-        // Note that this will always be `None` if `cfg.inode_file_handles` is `Never`, but we only
-        // really need this alt key when we do not have an `O_PATH` fd open for every inode.  So if
-        // `cfg.inode_file_handles` is `Never`, we do not need this key anyway.
-        let handle_altkey = handle.map(InodeAltKey::Handle);
 
-        let existing_inode =
-            Self::claim_inode(&self.inodes.read().unwrap(), handle_altkey, ids_altkey);
+        let existing_inode = Self::claim_inode(&self.inodes.read().unwrap(), handle.as_ref(), &ids);
 
         let inode = if let Some(inode) = existing_inode {
             inode
@@ -808,26 +713,18 @@ impl PassthroughFs {
             let inode = self.next_inode.fetch_add(1, Ordering::Relaxed);
             let mut inodes = self.inodes.write().unwrap();
 
-            if let Some(inode) = Self::claim_inode(&inodes, handle_altkey, ids_altkey) {
+            if let Some(inode) = Self::claim_inode(&inodes, handle.as_ref(), &ids) {
                 // An inode was added concurrently while we did not hold a lock on `self.inodes`, so
                 // we use that instead.  `file_or_handle` will be dropped.
                 inode
             } else {
-                inodes.insert(
+                inodes.insert(Arc::new(InodeData {
                     inode,
-                    Arc::new(InodeData {
-                        inode,
-                        file_or_handle,
-                        refcount: AtomicU64::new(1),
-                        dev: st.st.st_dev,
-                        mnt_id: st.mnt_id,
-                        mode: st.st.st_mode,
-                    }),
-                );
-                inodes.insert_alt(ids_altkey, inode);
-                if let Some(altkey) = handle_altkey {
-                    inodes.insert_alt(altkey, inode);
-                }
+                    file_or_handle,
+                    refcount: AtomicU64::new(1),
+                    ids,
+                    mode: st.st.st_mode,
+                }));
 
                 inode
             }
@@ -848,26 +745,24 @@ impl PassthroughFs {
     /// in the map or that the refcount is zero.  This function will never increment a refcount
     /// that's already zero.
     fn claim_inode(
-        inodes: &MultikeyBTreeMap<Inode, InodeAltKey, Arc<InodeData>>,
-        handle_altkey: Option<InodeAltKey>,
-        ids_altkey: InodeAltKey,
+        inodes: &InodeStore,
+        handle: Option<&FileHandle>,
+        ids: &InodeIds,
     ) -> Option<Inode> {
-        let data = handle_altkey
-            .and_then(|altkey| inodes.get_alt(&altkey))
-            .or_else(|| {
-                inodes.get_alt(&ids_altkey).filter(|data| {
-                    // When we have to fall back to looking up an inode by its inode ID, ensure
-                    // that we hit an entry that has a valid file descriptor.  Having an FD
-                    // open means that the inode cannot really be deleted until the FD is
-                    // closed, so that the inode ID remains valid until we evict the
-                    // `InodeData`.  With no FD open (and just a file handle), the inode can be
-                    // deleted while we still have our `InodeData`, and so the inode ID may be
-                    // reused by a completely different new inode.  Such inodes must be looked
-                    // up by file handle, because this handle contains a generation ID to
-                    // differentiate between the old and the new inode.
-                    matches!(data.file_or_handle, FileOrHandle::File(_))
-                })
-            });
+        let data = handle.and_then(|h| inodes.get_by_handle(h)).or_else(|| {
+            inodes.get_by_ids(ids).filter(|data| {
+                // When we have to fall back to looking up an inode by its inode ID, ensure
+                // that we hit an entry that has a valid file descriptor.  Having an FD
+                // open means that the inode cannot really be deleted until the FD is
+                // closed, so that the inode ID remains valid until we evict the
+                // `InodeData`.  With no FD open (and just a file handle), the inode can be
+                // deleted while we still have our `InodeData`, and so the inode ID may be
+                // reused by a completely different new inode.  Such inodes must be looked
+                // up by file handle, because this handle contains a generation ID to
+                // differentiate between the old and the new inode.
+                matches!(data.file_or_handle, FileOrHandle::File(_))
+            })
+        });
         if let Some(data) = data {
             // We use a CAS loop instead of `fetch_add()`, because we must never increment the
             // refcount from zero to one.
@@ -1020,11 +915,7 @@ impl PassthroughFs {
     }
 }
 
-fn forget_one(
-    inodes: &mut MultikeyBTreeMap<Inode, InodeAltKey, Arc<InodeData>>,
-    inode: Inode,
-    count: u64,
-) {
+fn forget_one(inodes: &mut InodeStore, inode: Inode, count: u64) {
     if let Some(data) = inodes.get(&inode) {
         // Acquiring the write lock on the inode map prevents new lookups from incrementing the
         // refcount but there is the possibility that a previous lookup already acquired a
@@ -1102,28 +993,17 @@ impl FileSystem for PassthroughFs {
         let mut inodes = self.inodes.write().unwrap();
 
         // Not sure why the root inode gets a refcount of 2 but that's what libfuse does.
-        inodes.insert(
-            fuse::ROOT_ID,
-            Arc::new(InodeData {
-                inode: fuse::ROOT_ID,
-                file_or_handle,
-                refcount: AtomicU64::new(2),
-                dev: st.st.st_dev,
-                mnt_id: st.mnt_id,
-                mode: st.st.st_mode,
-            }),
-        );
-        inodes.insert_alt(
-            InodeAltKey::Ids {
+        inodes.insert(Arc::new(InodeData {
+            inode: fuse::ROOT_ID,
+            file_or_handle,
+            refcount: AtomicU64::new(2),
+            ids: InodeIds {
                 ino: st.st.st_ino,
                 dev: st.st.st_dev,
                 mnt_id: st.mnt_id,
             },
-            fuse::ROOT_ID,
-        );
-        if let Some(h) = handle {
-            inodes.insert_alt(InodeAltKey::Handle(h), fuse::ROOT_ID);
-        }
+            mode: st.st.st_mode,
+        }));
 
         let mut opts = if self.cfg.readdirplus {
             FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO
