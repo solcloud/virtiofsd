@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 pub mod file_handle;
+pub mod mount_fd;
 pub mod stat;
 pub mod xattrmap;
 
@@ -14,7 +15,8 @@ use crate::filesystem::{
 use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
 use crate::read_dir::ReadDir;
-use file_handle::{FileHandle, MountFds, OpenableFileHandle};
+use file_handle::{FileHandle, OpenableFileHandle};
+use mount_fd::MountFds;
 use stat::{stat64, statx, StatExt};
 use std::borrow::Cow;
 use std::collections::{btree_map, BTreeMap};
