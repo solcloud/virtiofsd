@@ -9,7 +9,7 @@ use passthrough::xattrmap::XattrMap;
 use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::{env, error, fmt, io, process};
 
 use structopt::StructOpt;
@@ -18,7 +18,7 @@ use vhost::vhost_user::message::*;
 use vhost::vhost_user::Error::PartialMessage;
 use vhost::vhost_user::{Listener, SlaveFsCacheReq};
 use vhost_user_backend::Error::HandleRequest;
-use vhost_user_backend::{VhostUserBackendMut, VhostUserDaemon, VringMutex, VringState, VringT};
+use vhost_user_backend::{VhostUserBackend, VhostUserDaemon, VringMutex, VringState, VringT};
 use virtio_bindings::bindings::virtio_net::*;
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
@@ -319,9 +319,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsBackend<F> {
     }
 }
 
-impl<F: FileSystem + Send + Sync + 'static> VhostUserBackendMut<VringMutex>
-    for VhostUserFsBackend<F>
-{
+impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend<VringMutex> for VhostUserFsBackend<F> {
     fn num_queues(&self) -> usize {
         NUM_QUEUES
     }
@@ -345,20 +343,17 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackendMut<VringMutex>
             | VhostUserProtocolFeatures::CONFIGURE_MEM_SLOTS
     }
 
-    fn set_event_idx(&mut self, enabled: bool) {
+    fn set_event_idx(&self, enabled: bool) {
         self.thread.lock().unwrap().event_idx = enabled;
     }
 
-    fn update_memory(
-        &mut self,
-        mem: GuestMemoryAtomic<GuestMemoryMmap>,
-    ) -> VhostUserBackendResult<()> {
+    fn update_memory(&self, mem: GuestMemoryAtomic<GuestMemoryMmap>) -> VhostUserBackendResult<()> {
         self.thread.lock().unwrap().mem = Some(mem);
         Ok(())
     }
 
     fn handle_event(
-        &mut self,
+        &self,
         device_event: u16,
         evset: EventSet,
         vrings: &[VringMutex],
@@ -381,7 +376,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackendMut<VringMutex>
         Some(self.thread.lock().unwrap().kill_evt.try_clone().unwrap())
     }
 
-    fn set_slave_req_fd(&mut self, vu_req: SlaveFsCacheReq) {
+    fn set_slave_req_fd(&self, vu_req: SlaveFsCacheReq) {
         self.thread.lock().unwrap().vu_req = Some(vu_req);
     }
 }
@@ -833,9 +828,7 @@ fn main() {
     drop_child_capabilities(opt.inode_file_handles);
 
     let fs = PassthroughFs::new(fs_cfg).unwrap();
-    let fs_backend = Arc::new(RwLock::new(
-        VhostUserFsBackend::new(fs, thread_pool_size).unwrap(),
-    ));
+    let fs_backend = Arc::new(VhostUserFsBackend::new(fs, thread_pool_size).unwrap());
 
     let mut daemon = VhostUserDaemon::new(
         String::from("virtiofsd-backend"),
@@ -861,8 +854,6 @@ fn main() {
     }
 
     let kill_evt = fs_backend
-        .read()
-        .unwrap()
         .thread
         .lock()
         .unwrap()
