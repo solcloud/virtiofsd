@@ -9,7 +9,7 @@ use passthrough::xattrmap::XattrMap;
 use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::{env, error, fmt, io, process};
 
 use structopt::StructOpt;
@@ -128,6 +128,28 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
         })
     }
 
+    fn return_descriptor(vring_state: &mut VringState, head_index: u16, event_idx: bool) {
+        if vring_state.add_used(head_index, 0).is_err() {
+            warn!("Couldn't return used descriptors to the ring");
+        }
+
+        if event_idx {
+            match vring_state.needs_notification() {
+                Err(_) => {
+                    warn!("Couldn't check if queue needs to be notified");
+                    vring_state.signal_used_queue().unwrap();
+                }
+                Ok(needs_notification) => {
+                    if needs_notification {
+                        vring_state.signal_used_queue().unwrap();
+                    }
+                }
+            }
+        } else {
+            vring_state.signal_used_queue().unwrap();
+        }
+    }
+
     fn process_queue_pool(&mut self, vring: VringMutex) -> Result<bool> {
         let mut used_any = false;
         let atomic_mem = match &self.mem {
@@ -168,35 +190,14 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
                     .map_err(Error::ProcessQueue)
                     .unwrap();
 
-                if event_idx {
-                    if worker_vring.add_used(head_index, 0).is_err() {
-                        warn!("Couldn't return used descriptors to the ring");
-                    }
-
-                    match worker_vring.needs_notification() {
-                        Err(_) => {
-                            warn!("Couldn't check if queue needs to be notified");
-                            worker_vring.signal_used_queue().unwrap();
-                        }
-                        Ok(needs_notification) => {
-                            if needs_notification {
-                                worker_vring.signal_used_queue().unwrap();
-                            }
-                        }
-                    }
-                } else {
-                    if worker_vring.add_used(head_index, 0).is_err() {
-                        warn!("Couldn't return used descriptors to the ring");
-                    }
-                    worker_vring.signal_used_queue().unwrap();
-                }
+                Self::return_descriptor(&mut worker_vring.get_mut(), head_index, event_idx);
             });
         }
 
         Ok(used_any)
     }
 
-    fn process_queue_serial(&mut self, vring_state: &mut MutexGuard<VringState>) -> Result<bool> {
+    fn process_queue_serial(&mut self, vring_state: &mut VringState) -> Result<bool> {
         let mut used_any = false;
         let mem = match &self.mem {
             Some(m) => m.memory(),
@@ -226,28 +227,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
                 .map_err(Error::ProcessQueue)
                 .unwrap();
 
-            if self.event_idx {
-                if vring_state.add_used(head_index, 0).is_err() {
-                    warn!("Couldn't return used descriptors to the ring");
-                }
-
-                match vring_state.needs_notification() {
-                    Err(_) => {
-                        warn!("Couldn't check if queue needs to be notified");
-                        vring_state.signal_used_queue().unwrap();
-                    }
-                    Ok(needs_notification) => {
-                        if needs_notification {
-                            vring_state.signal_used_queue().unwrap();
-                        }
-                    }
-                }
-            } else {
-                if vring_state.add_used(head_index, 0).is_err() {
-                    warn!("Couldn't return used descriptors to the ring");
-                }
-                vring_state.signal_used_queue().unwrap();
-            }
+            Self::return_descriptor(vring_state, head_index, self.event_idx);
         }
 
         Ok(used_any)
