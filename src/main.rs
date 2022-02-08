@@ -495,11 +495,11 @@ struct Opt {
     #[structopt(long = "rlimit-nofile")]
     rlimit_nofile: Option<u64>,
 
-    /// Options in a format compatible with the legacy implementation
+    /// Options in a format compatible with the legacy implementation (deprecated)
     #[structopt(short = "o")]
     compat_options: Option<Vec<String>>,
 
-    /// Set log level to "debug" in a compatible way with the legacy implementation
+    /// Set log level to "debug" (deprecated)
     #[structopt(short = "d")]
     compat_debug: bool,
 
@@ -507,10 +507,9 @@ struct Opt {
     #[structopt(long)]
     no_killpriv_v2: bool,
 
-    // Set foreground operation (Deprecated)
-    // Do nothing. It is hidden from the help message to make it easier to remove it later
-    #[structopt(short = "f", hidden = true)]
-    _compat_foreground: bool,
+    /// Compatibility option that has no effect (deprecated)
+    #[structopt(short = "f")]
+    compat_foreground: bool,
 }
 
 fn parse_compat(opt: Opt) -> Opt {
@@ -703,6 +702,16 @@ fn main() {
             process::exit(1);
         }
     };
+    if opt.compat_foreground {
+        warn!("Use of deprecated flag '-f': This flag has no effect, please remove it");
+    }
+    if opt.compat_debug {
+        warn!("Use of deprecated flag '-d': Please use the '--log-level debug' option instead");
+    }
+    if opt.compat_options.is_some() {
+        warn!("Use of deprecated option format '-o': Please specify options without it (e.g., '--cache auto' instead of '-o cache=auto')");
+    }
+
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
     let xattr = if xattrmap.is_some() { true } else { opt.xattr };
@@ -730,7 +739,7 @@ fn main() {
             let old_umask = unsafe { libc::umask(umask) };
 
             let socket = opt.socket_path.as_ref().unwrap_or_else(|| {
-                println!("warning: use of deprecated parameter '--socket': Please use the '--socket-path' option instead.");
+                warn!("use of deprecated parameter '--socket': Please use the '--socket-path' option instead");
                 opt.socket.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
             });
             let listener = Listener::new(socket, true).unwrap_or_else(|error| {
