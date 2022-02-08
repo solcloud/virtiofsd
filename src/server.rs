@@ -15,6 +15,7 @@ use std::ffi::CStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::{size_of, MaybeUninit};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use vm_memory::ByteValued;
 
@@ -59,11 +60,15 @@ impl<'a> io::Write for ZcWriter<'a> {
 
 pub struct Server<F: FileSystem + Sync> {
     fs: F,
+    options: AtomicU32,
 }
 
 impl<F: FileSystem + Sync> Server<F> {
     pub fn new(fs: F) -> Server<F> {
-        Server { fs }
+        Server {
+            fs,
+            options: AtomicU32::new(FsOptions::empty().bits()),
+        }
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -928,13 +933,14 @@ impl<F: FileSystem + Sync> Server<F> {
 
         match self.fs.init(capable) {
             Ok(want) => {
-                let enabled = capable & (want | supported);
+                let enabled = (capable & (want | supported)).bits();
+                self.options.store(enabled, Ordering::Relaxed);
 
                 let out = InitOut {
                     major: KERNEL_VERSION,
                     minor: KERNEL_MINOR_VERSION,
                     max_readahead,
-                    flags: enabled.bits(),
+                    flags: enabled,
                     max_background: ::std::u16::MAX,
                     congestion_threshold: (::std::u16::MAX / 4) * 3,
                     max_write: MAX_BUFFER_SIZE,
@@ -1292,6 +1298,8 @@ impl<F: FileSystem + Sync> Server<F> {
     fn destroy(&self) -> usize {
         // No reply to this function.
         self.fs.destroy();
+        self.options
+            .store(FsOptions::empty().bits(), Ordering::Relaxed);
 
         0
     }
