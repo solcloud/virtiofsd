@@ -9,7 +9,7 @@ use passthrough::xattrmap::XattrMap;
 use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::{env, error, fmt, io, process};
 
 use structopt::StructOpt;
@@ -309,12 +309,12 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
 }
 
 struct VhostUserFsBackend<F: FileSystem + Send + Sync + 'static> {
-    thread: Mutex<VhostUserFsThread<F>>,
+    thread: RwLock<VhostUserFsThread<F>>,
 }
 
 impl<F: FileSystem + Send + Sync + 'static> VhostUserFsBackend<F> {
     fn new(fs: F, thread_pool_size: usize) -> Result<Self> {
-        let thread = Mutex::new(VhostUserFsThread::new(fs, thread_pool_size)?);
+        let thread = RwLock::new(VhostUserFsThread::new(fs, thread_pool_size)?);
         Ok(VhostUserFsBackend { thread })
     }
 }
@@ -344,11 +344,11 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend<VringMutex> for Vho
     }
 
     fn set_event_idx(&self, enabled: bool) {
-        self.thread.lock().unwrap().event_idx = enabled;
+        self.thread.write().unwrap().event_idx = enabled;
     }
 
     fn update_memory(&self, mem: GuestMemoryAtomic<GuestMemoryMmap>) -> VhostUserBackendResult<()> {
-        self.thread.lock().unwrap().mem = Some(mem);
+        self.thread.write().unwrap().mem = Some(mem);
         Ok(())
     }
 
@@ -363,7 +363,8 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend<VringMutex> for Vho
             return Err(Error::HandleEventNotEpollIn.into());
         }
 
-        let mut thread = self.thread.lock().unwrap();
+        // TODO: Figure out how we can implement `handle_event()` with just a `read()` lock.
+        let mut thread = self.thread.write().unwrap();
 
         if thread.pool.is_some() {
             thread.handle_event_pool(device_event, vrings)
@@ -373,11 +374,11 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend<VringMutex> for Vho
     }
 
     fn exit_event(&self, _thread_index: usize) -> Option<EventFd> {
-        Some(self.thread.lock().unwrap().kill_evt.try_clone().unwrap())
+        Some(self.thread.read().unwrap().kill_evt.try_clone().unwrap())
     }
 
     fn set_slave_req_fd(&self, vu_req: SlaveFsCacheReq) {
-        self.thread.lock().unwrap().vu_req = Some(vu_req);
+        self.thread.write().unwrap().vu_req = Some(vu_req);
     }
 }
 
@@ -855,7 +856,7 @@ fn main() {
 
     let kill_evt = fs_backend
         .thread
-        .lock()
+        .read()
         .unwrap()
         .kill_evt
         .try_clone()
