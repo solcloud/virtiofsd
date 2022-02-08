@@ -739,12 +739,37 @@ impl<F: FileSystem + Sync> Server<F> {
     }
 
     fn setxattr(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
-        let SetxattrIn { size, flags } = r.read_obj().map_err(Error::DecodeMessage)?;
+        let options = FsOptions::from_bits_truncate(self.options.load(Ordering::Relaxed));
+        let (
+            SetxattrIn {
+                size,
+                flags,
+                setxattr_flags,
+                ..
+            },
+            setxattrin_size,
+        ) = if options.contains(FsOptions::SETXATTR_EXT) {
+            (
+                r.read_obj().map_err(Error::DecodeMessage)?,
+                size_of::<SetxattrIn>(),
+            )
+        } else {
+            let SetxattrInCompat { size, flags } = r.read_obj().map_err(Error::DecodeMessage)?;
+            (
+                SetxattrIn {
+                    size,
+                    flags,
+                    setxattr_flags: 0,
+                    padding: 0,
+                },
+                size_of::<SetxattrInCompat>(),
+            )
+        };
 
         // The name and value and encoded one after another and separated by a '\0' character.
         let len = (in_header.len as usize)
             .checked_sub(size_of::<InHeader>())
-            .and_then(|l| l.checked_sub(size_of::<SetxattrIn>()))
+            .and_then(|l| l.checked_sub(setxattrin_size))
             .ok_or(Error::InvalidHeaderLength)?;
         let mut buf = vec![0; len];
 
@@ -769,6 +794,7 @@ impl<F: FileSystem + Sync> Server<F> {
             bytes_to_cstr(name)?,
             value,
             flags,
+            SetxattrFlags::from_bits_truncate(setxattr_flags),
         ) {
             Ok(()) => reply_ok(None::<u8>, None, in_header.unique, w),
             Err(e) => reply_error(e, in_header.unique, w),
