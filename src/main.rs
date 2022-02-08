@@ -150,7 +150,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
         }
     }
 
-    fn process_queue_pool(&mut self, vring: VringMutex) -> Result<bool> {
+    fn process_queue_pool(&self, vring: VringMutex) -> Result<bool> {
         let mut used_any = false;
         let atomic_mem = match &self.mem {
             Some(m) => m,
@@ -197,12 +197,13 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
         Ok(used_any)
     }
 
-    fn process_queue_serial(&mut self, vring_state: &mut VringState) -> Result<bool> {
+    fn process_queue_serial(&self, vring_state: &mut VringState) -> Result<bool> {
         let mut used_any = false;
         let mem = match &self.mem {
             Some(m) => m.memory(),
             None => return Err(Error::NoMemoryConfigured),
         };
+        let mut vu_req = self.vu_req.clone();
 
         let avail_chains: Vec<DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap>>> = vring_state
             .get_queue_mut()
@@ -223,7 +224,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
                 .unwrap();
 
             self.server
-                .handle_message(reader, writer, self.vu_req.as_mut())
+                .handle_message(reader, writer, vu_req.as_mut())
                 .map_err(Error::ProcessQueue)
                 .unwrap();
 
@@ -234,7 +235,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
     }
 
     fn handle_event_pool(
-        &mut self,
+        &self,
         device_event: u16,
         vrings: &[VringMutex],
     ) -> VhostUserBackendResult<bool> {
@@ -271,7 +272,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
     }
 
     fn handle_event_serial(
-        &mut self,
+        &self,
         device_event: u16,
         vrings: &[VringMutex],
     ) -> VhostUserBackendResult<bool> {
@@ -363,8 +364,7 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserBackend<VringMutex> for Vho
             return Err(Error::HandleEventNotEpollIn.into());
         }
 
-        // TODO: Figure out how we can implement `handle_event()` with just a `read()` lock.
-        let mut thread = self.thread.write().unwrap();
+        let thread = self.thread.read().unwrap();
 
         if thread.pool.is_some() {
             thread.handle_event_pool(device_event, vrings)
