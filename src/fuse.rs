@@ -623,6 +623,7 @@ pub enum Opcode {
     CopyFileRange = 47,
     SetupMapping = 48,
     RemoveMapping = 49,
+    Syncfs = 50,
 }
 
 #[repr(u32)]
@@ -1205,3 +1206,11 @@ pub struct RemovemappingOne {
 }
 
 unsafe impl ByteValued for RemovemappingOne {}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct SyncfsIn {
+    pub padding: u64,
+}
+
+unsafe impl ByteValued for SyncfsIn {}

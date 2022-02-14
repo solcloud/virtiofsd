@@ -2270,4 +2270,19 @@ impl FileSystem for PassthroughFs {
             Ok(res as usize)
         }
     }
+
+    fn syncfs(&self, _ctx: Context, inode: Inode) -> io::Result<()> {
+        // TODO: Branch here depending on whether virtiofsd announces submounts or not.
+
+        let file = self.open_inode(inode, libc::O_RDONLY | libc::O_NOFOLLOW)?;
+        let raw_fd = file.as_raw_fd();
+        debug!("syncfs: inode={}, mount_fd={}", inode, raw_fd);
+        let ret = unsafe { libc::syncfs(raw_fd) };
+        if ret != 0 {
+            // Thread-safe, because errno is stored in thread-local storage.
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
