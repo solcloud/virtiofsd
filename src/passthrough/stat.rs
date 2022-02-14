@@ -9,9 +9,11 @@ use std::os::unix::io::AsRawFd;
 
 const EMPTY_CSTR: &[u8] = b"\0";
 
+pub type MountId = u64;
+
 pub struct StatExt {
     pub st: libc::stat64,
-    pub mnt_id: u64,
+    pub mnt_id: MountId,
 }
 
 pub fn stat64(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
@@ -52,7 +54,7 @@ pub fn stat64(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
  */
 trait SafeStatXAccess {
     fn stat64(&self) -> Option<libc::stat64>;
-    fn mount_id(&self) -> Option<u64>;
+    fn mount_id(&self) -> Option<MountId>;
 }
 
 impl SafeStatXAccess for libc::statx {
@@ -96,7 +98,7 @@ impl SafeStatXAccess for libc::statx {
         }
     }
 
-    fn mount_id(&self) -> Option<u64> {
+    fn mount_id(&self) -> Option<MountId> {
         if self.stx_mask & libc::STATX_MNT_ID != 0 {
             Some(self.stx_mnt_id)
         } else {

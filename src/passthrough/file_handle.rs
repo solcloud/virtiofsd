@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use crate::passthrough::mount_fd::{MountFd, MountFds};
+use crate::passthrough::mount_fd::{MPRResult, MountFd, MountFds};
+use crate::passthrough::stat::MountId;
 use std::ffi::CStr;
 use std::fs::File;
 use std::io;
@@ -22,7 +23,7 @@ struct CFileHandle {
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 pub struct FileHandle {
-    mnt_id: u64,
+    mnt_id: MountId,
     handle: CFileHandle,
 }
 
@@ -78,7 +79,7 @@ impl FileHandle {
         };
         if ret == 0 {
             Ok(Some(FileHandle {
-                mnt_id: mount_id as u64,
+                mnt_id: mount_id as MountId,
                 handle: c_fh,
             }))
         } else {
@@ -112,7 +113,7 @@ impl FileHandle {
         &self,
         mount_fds: &MountFds,
         reopen_fd: F,
-    ) -> io::Result<OpenableFileHandle>
+    ) -> MPRResult<OpenableFileHandle>
     where
         F: FnOnce(RawFd, libc::c_int) -> io::Result<File>,
     {

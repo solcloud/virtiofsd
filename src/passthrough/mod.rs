@@ -16,8 +16,8 @@ use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
 use crate::read_dir::ReadDir;
 use file_handle::{FileHandle, OpenableFileHandle};
-use mount_fd::MountFds;
-use stat::{stat64, statx, StatExt};
+use mount_fd::{MPRError, MountFds};
+use stat::{stat64, statx, MountId, StatExt};
 use std::borrow::Cow;
 use std::collections::{btree_map, BTreeMap};
 use std::ffi::{CStr, CString};
@@ -42,7 +42,7 @@ enum InodeAltKey {
     Ids {
         ino: libc::ino64_t,
         dev: libc::dev_t,
-        mnt_id: u64,
+        mnt_id: MountId,
     },
     Handle(FileHandle),
 }
@@ -60,7 +60,7 @@ struct InodeData {
 
     // Required to detect submounts
     dev: libc::dev_t,
-    mnt_id: u64,
+    mnt_id: MountId,
 
     // File type and mode
     mode: u32,
@@ -697,6 +697,89 @@ impl PassthroughFs {
             .into_file()
     }
 
+    /// Generate a file handle for `fd` using `FileHandle::from_fd()`.  `st` is `fd`'s stat
+    /// information (we may need the mount ID for errors/warnings).
+    ///
+    /// These are the possible return values:
+    /// - `Ok(Some(_))`: Success, caller should use this file handle.
+    /// - `Ok(None)`: No error, but no file handle is available.  The caller should fall back to
+    ///               using an `O_PATH` FD.
+    /// - `Err(_)`: An error occurred, the caller should return this to the guest.
+    ///
+    /// This function takes the chosen `self.cfg.inode_file_handles` mode into account:
+    /// - `Never`: Always return `Ok(None)`.
+    /// - `Fallback`: Return `Ok(None)` when file handles are not supported by this filesystem.
+    ///               Otherwise, return either `Ok(Some(_))` or `Err(_)`, depending on whether a
+    ///               file handle could be generated or not.
+    /// - `Mandatory`: Never return `Ok(None)`.  When the filesystem does not support file handles,
+    ///                return an `Err(_)`.
+    ///
+    /// When the filesystem does not support file handles, this is logged (as a warning in
+    /// `Fallback` mode, and as an error in `Mandatory` mode) one time per filesystem.
+    fn get_file_handle_opt(
+        &self,
+        fd: &impl AsRawFd,
+        st: &StatExt,
+    ) -> io::Result<Option<FileHandle>> {
+        let handle = match self.cfg.inode_file_handles {
+            InodeFileHandlesMode::Never => {
+                // Let's make this quick, so we can skip this case below
+                return Ok(None);
+            }
+
+            InodeFileHandlesMode::Fallback | InodeFileHandlesMode::Mandatory => {
+                FileHandle::from_fd(fd)?
+            }
+        };
+
+        if handle.is_none() {
+            // No error, but no handle (because of EOPNOTSUPP/EOVERFLOW)?  Log it.
+            let io_err = io::Error::from_raw_os_error(libc::EOPNOTSUPP);
+
+            let desc = match self.cfg.inode_file_handles {
+                InodeFileHandlesMode::Never => unreachable!(),
+                InodeFileHandlesMode::Fallback => {
+                    "Filesystem does not support file handles, falling back to O_PATH FDs"
+                }
+                InodeFileHandlesMode::Mandatory => "Filesystem does not support file handles",
+            };
+
+            // Use the MPRError object, because (with a mount ID obtained through statx())
+            // `self.mount_fds.error_for()` will attempt to add a prefix to the error description
+            // that describes the offending filesystem by mount point and mount ID, and will also
+            // suppress the message if we have already logged any error concerning file handles for
+            // the respective filesystem (so we only log errors/warnings once).
+            let err: MPRError = if st.mnt_id > 0 {
+                // Valid mount ID
+                self.mount_fds.error_for(st.mnt_id, io_err)
+            } else {
+                // No valid mount ID, return error object not bound to a filesystem
+                io_err.into()
+            }
+            .set_desc(desc.to_string());
+
+            // In `Fallback` mode, warn; in `Mandatory` mode, log and return an error.
+            // (Suppress logging if the error is silenced, which means that we have already logged
+            // a warning/error for this filesystem.)
+            match self.cfg.inode_file_handles {
+                InodeFileHandlesMode::Never => unreachable!(),
+                InodeFileHandlesMode::Fallback => {
+                    if !err.silent() {
+                        warn!("{}", err);
+                    }
+                }
+                InodeFileHandlesMode::Mandatory => {
+                    if !err.silent() {
+                        error!("{}", err);
+                    }
+                    return Err(err.into_inner());
+                }
+            }
+        }
+
+        Ok(handle)
+    }
+
     fn do_lookup(&self, parent: Inode, name: &CStr) -> io::Result<Entry> {
         let p = self
             .inodes
@@ -725,16 +808,8 @@ impl PassthroughFs {
             unsafe { File::from_raw_fd(fd) }
         };
 
-        let handle = match self.cfg.inode_file_handles {
-            InodeFileHandlesMode::Never => None,
-            InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
-            InodeFileHandlesMode::Mandatory => Some(
-                FileHandle::from_fd(&path_fd)?
-                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EOPNOTSUPP))?,
-            ),
-        };
-
         let st = self.stat(&path_fd, None)?;
+        let handle = self.get_file_handle_opt(&path_fd, &st)?;
 
         let mut attr_flags: u32 = 0;
 
@@ -762,9 +837,17 @@ impl PassthroughFs {
             inode
         } else {
             let file_or_handle = if let Some(h) = handle.as_ref() {
-                FileOrHandle::Handle(h.to_openable(&self.mount_fds, |fd, flags| {
-                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                })?)
+                FileOrHandle::Handle(
+                    h.to_openable(&self.mount_fds, |fd, flags| {
+                        reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+                    })
+                    .map_err(|e| {
+                        if !e.silent() {
+                            error!("{}", e);
+                        }
+                        e.into_inner()
+                    })?,
+                )
             } else {
                 FileOrHandle::File(path_fd)
             };
@@ -1042,21 +1125,21 @@ impl FileSystem for PassthroughFs {
             libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )?;
 
-        let handle = match self.cfg.inode_file_handles {
-            InodeFileHandlesMode::Never => None,
-            InodeFileHandlesMode::Fallback => FileHandle::from_fd(&path_fd)?,
-            InodeFileHandlesMode::Mandatory => Some(
-                FileHandle::from_fd(&path_fd)?
-                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EOPNOTSUPP))?,
-            ),
-        };
-
         let st = self.stat(&path_fd, None)?;
+        let handle = self.get_file_handle_opt(&path_fd, &st)?;
 
         let file_or_handle = if let Some(h) = handle.as_ref() {
-            FileOrHandle::Handle(h.to_openable(&self.mount_fds, |fd, flags| {
-                reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-            })?)
+            FileOrHandle::Handle(
+                h.to_openable(&self.mount_fds, |fd, flags| {
+                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+                })
+                .map_err(|e| {
+                    if !e.silent() {
+                        error!("{}", e);
+                    }
+                    e.into_inner()
+                })?,
+            )
         } else {
             FileOrHandle::File(path_fd)
         };
