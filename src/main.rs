@@ -860,7 +860,19 @@ fn main() {
                 error!("Error during waitpid()");
                 process::exit(1);
             }
-            process::exit(libc::WEXITSTATUS(status));
+
+            let exit_code = if libc::WIFEXITED(status) {
+                libc::WEXITSTATUS(status)
+            } else if libc::WIFSIGNALED(status) {
+                let signal = libc::WTERMSIG(status);
+                error!("Child process terminated by signal {}", signal);
+                -signal
+            } else {
+                error!("Unexpected waitpid status: {:#X}", status);
+                libc::EXIT_FAILURE
+            };
+
+            process::exit(exit_code);
         }
         // `enter()` returns `None` to the process that should proceed (i.e. to the child, if it
         // forked).
