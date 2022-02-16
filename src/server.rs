@@ -15,6 +15,7 @@ use std::ffi::CStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::{size_of, MaybeUninit};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use vm_memory::ByteValued;
 
@@ -59,11 +60,15 @@ impl<'a> io::Write for ZcWriter<'a> {
 
 pub struct Server<F: FileSystem + Sync> {
     fs: F,
+    options: AtomicU32,
 }
 
 impl<F: FileSystem + Sync> Server<F> {
     pub fn new(fs: F) -> Server<F> {
-        Server { fs }
+        Server {
+            fs,
+            options: AtomicU32::new(FsOptions::empty().bits()),
+        }
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -735,12 +740,37 @@ impl<F: FileSystem + Sync> Server<F> {
     }
 
     fn setxattr(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
-        let SetxattrIn { size, flags } = r.read_obj().map_err(Error::DecodeMessage)?;
+        let options = FsOptions::from_bits_truncate(self.options.load(Ordering::Relaxed));
+        let (
+            SetxattrIn {
+                size,
+                flags,
+                setxattr_flags,
+                ..
+            },
+            setxattrin_size,
+        ) = if options.contains(FsOptions::SETXATTR_EXT) {
+            (
+                r.read_obj().map_err(Error::DecodeMessage)?,
+                size_of::<SetxattrIn>(),
+            )
+        } else {
+            let SetxattrInCompat { size, flags } = r.read_obj().map_err(Error::DecodeMessage)?;
+            (
+                SetxattrIn {
+                    size,
+                    flags,
+                    setxattr_flags: 0,
+                    padding: 0,
+                },
+                size_of::<SetxattrInCompat>(),
+            )
+        };
 
         // The name and value and encoded one after another and separated by a '\0' character.
         let len = (in_header.len as usize)
             .checked_sub(size_of::<InHeader>())
-            .and_then(|l| l.checked_sub(size_of::<SetxattrIn>()))
+            .and_then(|l| l.checked_sub(setxattrin_size))
             .ok_or(Error::InvalidHeaderLength)?;
         let mut buf = vec![0; len];
 
@@ -765,6 +795,7 @@ impl<F: FileSystem + Sync> Server<F> {
             bytes_to_cstr(name)?,
             value,
             flags,
+            SetxattrFlags::from_bits_truncate(setxattr_flags),
         ) {
             Ok(()) => reply_ok(None::<u8>, None, in_header.unique, w),
             Err(e) => reply_error(e, in_header.unique, w),
@@ -929,13 +960,14 @@ impl<F: FileSystem + Sync> Server<F> {
 
         match self.fs.init(capable) {
             Ok(want) => {
-                let enabled = capable & (want | supported);
+                let enabled = (capable & (want | supported)).bits();
+                self.options.store(enabled, Ordering::Relaxed);
 
                 let out = InitOut {
                     major: KERNEL_VERSION,
                     minor: KERNEL_MINOR_VERSION,
                     max_readahead,
-                    flags: enabled.bits(),
+                    flags: enabled,
                     max_background: ::std::u16::MAX,
                     congestion_threshold: (::std::u16::MAX / 4) * 3,
                     max_write: MAX_BUFFER_SIZE,
@@ -1293,6 +1325,8 @@ impl<F: FileSystem + Sync> Server<F> {
     fn destroy(&self) -> usize {
         // No reply to this function.
         self.fs.destroy();
+        self.options
+            .store(FsOptions::empty().bits(), Ordering::Relaxed);
 
         0
     }

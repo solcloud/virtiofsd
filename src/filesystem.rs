@@ -11,7 +11,7 @@ use std::{io, mem};
 use crate::fuse;
 
 use super::fs_cache_req_handler::FsCacheReqHandler;
-pub use fuse::{FsOptions, OpenOptions, RemovemappingOne, SetattrValid, ROOT_ID};
+pub use fuse::{FsOptions, OpenOptions, RemovemappingOne, SetattrValid, SetxattrFlags, ROOT_ID};
 
 /// Information about a path in the filesystem.
 pub struct Entry {
@@ -863,6 +863,7 @@ pub trait FileSystem {
         name: &CStr,
         value: &[u8],
         flags: u32,
+        extra_flags: SetxattrFlags,
     ) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(libc::ENOSYS))
     }

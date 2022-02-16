@@ -156,6 +156,9 @@ const SUBMOUNTS: u32 = 134_217_728;
 /// Fs handles killing suid/sgid/cap on write/chown/trunc (v2).
 const HANDLE_KILLPRIV_V2: u32 = 268_435_456;
 
+/// Server supports extended struct SetxattrIn
+const SETXATTR_EXT: u32 = 536_870_912;
+
 bitflags! {
     /// A bitfield passed in as a parameter to and returned from the `init` method of the
     /// `FileSystem` trait.
@@ -380,6 +383,9 @@ bitflags! {
         ///
         /// This feature is enabled by default if supported by the kernel.
         const HANDLE_KILLPRIV_V2 = HANDLE_KILLPRIV_V2;
+
+        /// Server supports extended struct SetxattrIn
+        const SETXATTR_EXT = SETXATTR_EXT;
     }
 }
 
@@ -468,6 +474,7 @@ pub const FUSE_COMPAT_WRITE_IN_SIZE: u32 = 24;
 pub const FUSE_COMPAT_STATFS_SIZE: u32 = 48;
 pub const FUSE_COMPAT_INIT_OUT_SIZE: u32 = 8;
 pub const FUSE_COMPAT_22_INIT_OUT_SIZE: u32 = 24;
+pub const FUSE_COMPAT_SETXATTR_IN_SIZE: u32 = 8;
 
 // Attr.flags flags.
 
@@ -476,6 +483,17 @@ pub const ATTR_SUBMOUNT: u32 = 1;
 
 /// Kill suid and sgid if executable
 pub const OPEN_KILL_SUIDGID: u32 = 1;
+
+// setxattr flags
+/// Clear SGID when system.posix_acl_access is set
+const SETXATTR_ACL_KILL_SGID: u32 = 1;
+
+bitflags! {
+    pub struct SetxattrFlags: u32 {
+        /// Clear SGID when system.posix_acl_access is set
+        const SETXATTR_ACL_KILL_SGID = SETXATTR_ACL_KILL_SGID;
+    }
+}
 
 // Message definitions follow.  It is safe to implement ByteValued for all of these
 // because they are POD types.
@@ -876,8 +894,18 @@ unsafe impl ByteValued for FsyncIn {}
 pub struct SetxattrIn {
     pub size: u32,
     pub flags: u32,
+    pub setxattr_flags: u32,
+    pub padding: u32,
 }
 unsafe impl ByteValued for SetxattrIn {}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct SetxattrInCompat {
+    pub size: u32,
+    pub flags: u32,
+}
+unsafe impl ByteValued for SetxattrInCompat {}
 
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]

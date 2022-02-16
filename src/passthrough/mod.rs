@@ -10,7 +10,7 @@ pub mod xattrmap;
 use super::fs_cache_req_handler::FsCacheReqHandler;
 use crate::filesystem::{
     Context, Entry, FileSystem, FsOptions, GetxattrReply, ListxattrReply, OpenOptions,
-    SetattrValid, ZeroCopyReader, ZeroCopyWriter,
+    SetattrValid, SetxattrFlags, ZeroCopyReader, ZeroCopyWriter,
 };
 use crate::fuse;
 use crate::multikey::MultikeyBTreeMap;
@@ -2004,6 +2004,7 @@ impl FileSystem for PassthroughFs {
         name: &CStr,
         value: &[u8],
         flags: u32,
+        _extra_flags: SetxattrFlags,
     ) -> io::Result<()> {
         if !self.cfg.xattr {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
