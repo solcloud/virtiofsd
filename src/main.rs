@@ -6,6 +6,7 @@ use futures::executor::{ThreadPool, ThreadPoolBuilder};
 use libc::EFD_NONBLOCK;
 use log::*;
 use passthrough::xattrmap::XattrMap;
+use std::collections::HashSet;
 use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
@@ -483,6 +484,10 @@ struct Opt {
     #[structopt(long = "print-capabilities")]
     print_capabilities: bool,
 
+    /// Modify the list of capabilities, e.g., --modcaps=+sys_admin:-chown
+    #[structopt(long)]
+    modcaps: Option<String>,
+
     /// Log level (error, warn, info, debug, trace)
     #[structopt(long = "log-level", default_value = "info")]
     log_level: LevelFilter,
@@ -555,6 +560,7 @@ fn parse_compat(opt: Opt) -> Opt {
                 _ => value_error("sandbox", value),
             },
             ["source", value] => opt.shared_dir = Some(value.to_string()),
+            ["modcaps", value] => opt.modcaps = Some(value.to_string()),
             _ => argument_error(tuple),
         }
     }
@@ -639,6 +645,49 @@ fn set_signal_handlers() {
     }
 }
 
+fn parse_modcaps(
+    default_caps: Vec<&str>,
+    modcaps: Option<String>,
+) -> (HashSet<String>, HashSet<String>) {
+    let mut required_caps: HashSet<String> = default_caps.iter().map(|&s| s.into()).collect();
+    let mut disabled_caps = HashSet::new();
+
+    if let Some(modcaps) = modcaps {
+        for modcap in modcaps.split(':').map(str::to_string) {
+            if modcap.is_empty() {
+                error!("empty modcap found: expected (+|-)capability:...");
+                process::exit(1);
+            }
+            let (action, cap_name) = modcap.split_at(1);
+            let cap_name = cap_name.to_uppercase();
+            if !matches!(action, "+" | "-") {
+                error!(
+                    "invalid modcap action: expecting '+'|'-' but found '{}'",
+                    action
+                );
+                process::exit(1);
+            }
+            if let Err(error) = capng::name_to_capability(&cap_name) {
+                error!("invalid capability '{}': {}", &cap_name, error);
+                process::exit(1);
+            }
+
+            match action {
+                "+" => {
+                    disabled_caps.remove(&cap_name);
+                    required_caps.insert(cap_name);
+                }
+                "-" => {
+                    required_caps.remove(&cap_name);
+                    disabled_caps.insert(cap_name);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+    (required_caps, disabled_caps)
+}
+
 fn drop_parent_capabilities() {
     // The parent doesn't require any capabilities, as it'd be just waiting for
     // the child to exit.
@@ -649,8 +698,8 @@ fn drop_parent_capabilities() {
     }
 }
 
-fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode) {
-    let mut required_caps = vec![
+fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode, modcaps: Option<String>) {
+    let default_caps = vec![
         "CHOWN",
         "DAC_OVERRIDE",
         "FOWNER",
@@ -660,9 +709,18 @@ fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode) {
         "MKNOD",
         "SETFCAP",
     ];
+    let (mut required_caps, disabled_caps) = parse_modcaps(default_caps, modcaps);
 
     if inode_file_handles != InodeFileHandlesMode::Never {
-        required_caps.push("DAC_READ_SEARCH");
+        let required_cap = "DAC_READ_SEARCH".to_owned();
+        if disabled_caps.contains(&required_cap) {
+            error!(
+                "can't disable {} when using --inode-file-handles={:?}",
+                &required_cap, inode_file_handles
+            );
+            process::exit(1);
+        }
+        required_caps.insert(required_cap);
     }
 
     capng::clear(capng::Set::BOTH);
@@ -671,7 +729,7 @@ fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode) {
     if let Err(e) = capng::updatev(
         capng::Action::ADD,
         capng::Type::PERMITTED | capng::Type::EFFECTIVE,
-        required_caps,
+        required_caps.iter().map(String::as_str).collect(),
     ) {
         error!("can't set up the child capabilities: {}", e);
         process::exit(1);
@@ -830,7 +888,7 @@ fn main() {
         _ => enable_seccomp(opt.seccomp, opt.syslog).unwrap(),
     }
 
-    drop_child_capabilities(opt.inode_file_handles);
+    drop_child_capabilities(opt.inode_file_handles, opt.modcaps);
 
     let fs = PassthroughFs::new(fs_cfg).unwrap();
     let fs_backend = Arc::new(RwLock::new(
