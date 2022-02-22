@@ -13,7 +13,7 @@ use std::sync::Arc;
 const MAX_HANDLE_SZ: usize = 128;
 const EMPTY_CSTR: &[u8] = b"\0";
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Clone, PartialOrd, Ord, PartialEq, Eq)]
 #[repr(C)]
 struct CFileHandle {
     handle_bytes: libc::c_uint,
@@ -21,7 +21,7 @@ struct CFileHandle {
     f_handle: [libc::c_char; MAX_HANDLE_SZ],
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Clone, PartialOrd, Ord, PartialEq, Eq)]
 pub struct FileHandle {
     mnt_id: MountId,
     handle: CFileHandle,
@@ -30,6 +30,11 @@ pub struct FileHandle {
 pub struct OpenableFileHandle {
     handle: FileHandle,
     mount_fd: Arc<MountFd>,
+}
+
+pub enum FileOrHandle {
+    File(File),
+    Handle(OpenableFileHandle),
 }
 
 extern "C" {
@@ -118,13 +123,17 @@ impl FileHandle {
         F: FnOnce(RawFd, libc::c_int) -> io::Result<File>,
     {
         Ok(OpenableFileHandle {
-            handle: *self,
+            handle: self.clone(),
             mount_fd: mount_fds.get(self.mnt_id, reopen_fd)?,
         })
     }
 }
 
 impl OpenableFileHandle {
+    pub fn inner(&self) -> &FileHandle {
+        &self.handle
+    }
+
     /**
      * Open a file handle (low-level wrapper).
      *
