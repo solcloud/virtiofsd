@@ -13,6 +13,10 @@ pub const KERNEL_VERSION: u32 = 7;
 /// Minor version number of this interface.
 pub const KERNEL_MINOR_VERSION: u32 = 27;
 
+/// Minimum Minor version number supported. If client sends a minor
+/// number lesser than this, we don't support it.
+pub const MIN_KERNEL_MINOR_VERSION: u32 = 27;
+
 /// The ID of the inode corresponding to the root directory of the file system.
 pub const ROOT_ID: u64 = 1;
 

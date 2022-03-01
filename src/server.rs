@@ -930,7 +930,7 @@ impl<F: FileSystem + Sync> Server<F> {
             return reply_ok(Some(out), None, in_header.unique, w);
         }
 
-        if minor < KERNEL_MINOR_VERSION {
+        if minor < MIN_KERNEL_MINOR_VERSION {
             error!(
                 "Unsupported fuse protocol minor version: {}.{}",
                 major, minor
