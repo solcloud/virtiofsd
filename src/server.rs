@@ -903,12 +903,20 @@ impl<F: FileSystem + Sync> Server<F> {
     }
 
     fn init(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
-        let InitIn {
+        let InitInCompat {
             major,
             minor,
             max_readahead,
             flags,
         } = r.read_obj().map_err(Error::DecodeMessage)?;
+
+        let options = FsOptions::from_bits_truncate(flags);
+
+        let InitInExt { flags2, .. } = if options.contains(FsOptions::INIT_EXT) {
+            r.read_obj().map_err(Error::DecodeMessage)?
+        } else {
+            InitInExt::default()
+        };
 
         if major < KERNEL_VERSION {
             error!("Unsupported fuse protocol version: {}.{}", major, minor);

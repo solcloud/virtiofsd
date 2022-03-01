@@ -11,7 +11,7 @@ use vm_memory::ByteValued;
 pub const KERNEL_VERSION: u32 = 7;
 
 /// Minor version number of this interface.
-pub const KERNEL_MINOR_VERSION: u32 = 27;
+pub const KERNEL_MINOR_VERSION: u32 = 36;
 
 /// Minimum Minor version number supported. If client sends a minor
 /// number lesser than this, we don't support it.
@@ -63,6 +63,13 @@ const FOPEN_NONSEEKABLE: u32 = 4;
 /// Allow caching this directory.
 const FOPEN_CACHE_DIR: u32 = 8;
 
+/// The file is stream-like (no file position at all).
+#[allow(dead_code)]
+const FOPEN_STREAM: u32 = 16;
+
+/// Don't flush data cache on close (unless FUSE_WRITEBACK_CACHE)
+const FOPEN_NOFLUSH: u32 = 32;
+
 bitflags! {
     /// Options controlling the behavior of files opened by the server in response
     /// to an open or create request.
@@ -71,6 +78,8 @@ bitflags! {
         const KEEP_CACHE = FOPEN_KEEP_CACHE;
         const NONSEEKABLE = FOPEN_NONSEEKABLE;
         const CACHE_DIR = FOPEN_CACHE_DIR;
+        const STREAM = FOPEN_CACHE_DIR;
+        const NOFLUSH = FOPEN_NOFLUSH;
     }
 }
 
@@ -154,6 +163,12 @@ const NO_OPENDIR_SUPPORT: u32 = 16_777_216;
 /// Only invalidate cached pages on explicit request
 const EXPLICIT_INVAL_DATA: u32 = 33_554_432;
 
+/// init_out.map_alignment contains log2(byte alignment) for
+/// foffset and moffset fields in struct fuse_setupmapping_out and
+/// fuse_removemapping_one
+#[allow(dead_code)]
+const MAP_ALIGNMENT: u32 = 67_108_864;
+
 /// Kernel supports auto-mounting directory submounts
 const SUBMOUNTS: u32 = 134_217_728;
 
@@ -162,6 +177,20 @@ const HANDLE_KILLPRIV_V2: u32 = 268_435_456;
 
 /// Server supports extended struct SetxattrIn
 const SETXATTR_EXT: u32 = 536_870_912;
+
+/// Extended fuse_init_in request
+const INIT_EXT: u32 = 1_073_741_824;
+
+/// Reserved. Do not use.
+const INIT_RESERVED: u32 = 2_147_483_648;
+
+/// Add security context to create, mkdir, symlink, and mknod
+#[allow(dead_code)]
+const SECURITY_CTX: u64 = 4_294_967_296;
+
+/// Use per inode DAX
+#[allow(dead_code)]
+const HAS_INODE_DAX: u64 = 8_589_934_592;
 
 bitflags! {
     /// A bitfield passed in as a parameter to and returned from the `init` method of the
@@ -390,6 +419,13 @@ bitflags! {
 
         /// Server supports extended struct SetxattrIn
         const SETXATTR_EXT = SETXATTR_EXT;
+
+        /// Indicates that fuse_init_in structure has been extended and
+        /// expect extended struct coming in from kernel.
+        const INIT_EXT = INIT_EXT;
+
+        /// This bit is reserved. Don't use it.
+        const INIT_RESERVED = INIT_RESERVED;
     }
 }
 
@@ -480,11 +516,17 @@ pub const FUSE_COMPAT_INIT_OUT_SIZE: u32 = 8;
 pub const FUSE_COMPAT_22_INIT_OUT_SIZE: u32 = 24;
 pub const FUSE_COMPAT_SETXATTR_IN_SIZE: u32 = 8;
 
+// Fsync flags
+pub const FSYNC_FDATASYNC: u32 = 1;
+
 // Attr.flags flags.
 
 /// Object is a submount root
 pub const ATTR_SUBMOUNT: u32 = 1;
+/// Indicate to kernel to enable DAX for this file in per inode DAX mode
+pub const ATTR_DAX: u32 = 2;
 
+// Open flags
 /// Kill suid and sgid if executable
 pub const OPEN_KILL_SUIDGID: u32 = 1;
 
@@ -955,13 +997,21 @@ unsafe impl ByteValued for AccessIn {}
 
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
-pub struct InitIn {
+pub struct InitInCompat {
     pub major: u32,
     pub minor: u32,
     pub max_readahead: u32,
     pub flags: u32,
 }
-unsafe impl ByteValued for InitIn {}
+unsafe impl ByteValued for InitInCompat {}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct InitInExt {
+    pub flags2: u32,
+    pub unused: [u32; 11],
+}
+unsafe impl ByteValued for InitInExt {}
 
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -975,8 +1025,9 @@ pub struct InitOut {
     pub max_write: u32,
     pub time_gran: u32,
     pub max_pages: u16,
-    pub padding: u16,
-    pub unused: [u32; 8],
+    pub map_alignment: u16,
+    pub flags2: u32,
+    pub unused: [u32; 7],
 }
 unsafe impl ByteValued for InitOut {}
 
@@ -1246,3 +1297,21 @@ pub struct SyncfsIn {
 }
 
 unsafe impl ByteValued for SyncfsIn {}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct Secctx {
+    pub size: u32,
+    pub padding: u32,
+}
+
+unsafe impl ByteValued for Secctx {}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct SecctxHeader {
+    pub size: u32,
+    pub nr_secctx: u32,
+}
+
+unsafe impl ByteValued for SecctxHeader {}
