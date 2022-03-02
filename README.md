@@ -104,7 +104,7 @@ mapped in as themselves with the help of the `newuidmap(1)` and `newgidmap(1)` h
 
 ```
 host$ podman unshare -- virtiofsd --socket-path=/tmp/vfsd.sock --shared-dir /mnt \
-        --announce-submounts --sandbox none &
+        --announce-submounts --sandbox chroot &
 ```
 
 Using `lxc-usernsexec(1)`, we could leave the invoking user outside the mapping, having
@@ -112,17 +112,17 @@ the root user inside the user namespace mapped to the user and group 100000:
 
 ```
 host$ lxc-usernsexec -m b:0:100000:65536 -- virtiofsd --socket-path=/tmp/vfsd.sock \
-        --shared-dir /mnt --announce-submounts --sandbox none &
+        --shared-dir /mnt --announce-submounts --sandbox chroot &
 ```
 
 In order to have the same behavior as `podman-unshare(1)`, we need to run
 
 ```
 host$ lxc-usernsexec -m b:0:1000:1 -m b:1:100000:65536 -- virtiofsd --socket-path=/tmp/vfsd.sock \
-        --shared-dir /mnt --announce-submounts --sandbox none &
+        --shared-dir /mnt --announce-submounts --sandbox chroot &
 ```
 
-We could also select '--sandbox chroot' instead of '--sandbox none'.
+We could also select '--sandbox none' instead of '--sandbox chroot'.
 
 #### Limitations
 - Within the guest, it is not possible to create block or char device nodes in the shared directory.
