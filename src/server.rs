@@ -15,7 +15,7 @@ use std::ffi::CStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::{size_of, MaybeUninit};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use vm_memory::ByteValued;
 
@@ -60,14 +60,14 @@ impl<'a> io::Write for ZcWriter<'a> {
 
 pub struct Server<F: FileSystem + Sync> {
     fs: F,
-    options: AtomicU32,
+    options: AtomicU64,
 }
 
 impl<F: FileSystem + Sync> Server<F> {
     pub fn new(fs: F) -> Server<F> {
         Server {
             fs,
-            options: AtomicU32::new(FsOptions::empty().bits()),
+            options: AtomicU64::new(FsOptions::empty().bits()),
         }
     }
 
@@ -903,12 +903,20 @@ impl<F: FileSystem + Sync> Server<F> {
     }
 
     fn init(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
-        let InitIn {
+        let InitInCompat {
             major,
             minor,
             max_readahead,
             flags,
         } = r.read_obj().map_err(Error::DecodeMessage)?;
+
+        let options = FsOptions::from_bits_truncate(flags as u64);
+
+        let InitInExt { flags2, .. } = if options.contains(FsOptions::INIT_EXT) {
+            r.read_obj().map_err(Error::DecodeMessage)?
+        } else {
+            InitInExt::default()
+        };
 
         if major < KERNEL_VERSION {
             error!("Unsupported fuse protocol version: {}.{}", major, minor);
@@ -930,7 +938,7 @@ impl<F: FileSystem + Sync> Server<F> {
             return reply_ok(Some(out), None, in_header.unique, w);
         }
 
-        if minor < KERNEL_MINOR_VERSION {
+        if minor < MIN_KERNEL_MINOR_VERSION {
             error!(
                 "Unsupported fuse protocol minor version: {}.{}",
                 major, minor
@@ -953,7 +961,8 @@ impl<F: FileSystem + Sync> Server<F> {
             | FsOptions::MAX_PAGES
             | FsOptions::SUBMOUNTS;
 
-        let capable = FsOptions::from_bits_truncate(flags);
+        let flags_64 = ((flags2 as u64) << 32) | (flags as u64);
+        let capable = FsOptions::from_bits_truncate(flags_64);
 
         let page_size: u32 = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
         let max_pages = ((MAX_BUFFER_SIZE - 1) / page_size) + 1;
@@ -967,12 +976,14 @@ impl<F: FileSystem + Sync> Server<F> {
                     major: KERNEL_VERSION,
                     minor: KERNEL_MINOR_VERSION,
                     max_readahead,
-                    flags: enabled,
+                    flags: enabled as u32,
                     max_background: ::std::u16::MAX,
                     congestion_threshold: (::std::u16::MAX / 4) * 3,
                     max_write: MAX_BUFFER_SIZE,
                     time_gran: 1, // nanoseconds
                     max_pages: max_pages.try_into().unwrap(),
+                    map_alignment: 0,
+                    flags2: (enabled >> 32) as u32,
                     ..Default::default()
                 };
 

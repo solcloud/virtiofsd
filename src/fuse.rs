@@ -11,7 +11,11 @@ use vm_memory::ByteValued;
 pub const KERNEL_VERSION: u32 = 7;
 
 /// Minor version number of this interface.
-pub const KERNEL_MINOR_VERSION: u32 = 27;
+pub const KERNEL_MINOR_VERSION: u32 = 36;
+
+/// Minimum Minor version number supported. If client sends a minor
+/// number lesser than this, we don't support it.
+pub const MIN_KERNEL_MINOR_VERSION: u32 = 27;
 
 /// The ID of the inode corresponding to the root directory of the file system.
 pub const ROOT_ID: u64 = 1;
@@ -59,6 +63,13 @@ const FOPEN_NONSEEKABLE: u32 = 4;
 /// Allow caching this directory.
 const FOPEN_CACHE_DIR: u32 = 8;
 
+/// The file is stream-like (no file position at all).
+#[allow(dead_code)]
+const FOPEN_STREAM: u32 = 16;
+
+/// Don't flush data cache on close (unless FUSE_WRITEBACK_CACHE)
+const FOPEN_NOFLUSH: u32 = 32;
+
 bitflags! {
     /// Options controlling the behavior of files opened by the server in response
     /// to an open or create request.
@@ -67,102 +78,122 @@ bitflags! {
         const KEEP_CACHE = FOPEN_KEEP_CACHE;
         const NONSEEKABLE = FOPEN_NONSEEKABLE;
         const CACHE_DIR = FOPEN_CACHE_DIR;
+        const STREAM = FOPEN_CACHE_DIR;
+        const NOFLUSH = FOPEN_NOFLUSH;
     }
 }
 
 // INIT request/reply flags.
 
 /// Asynchronous read requests.
-const ASYNC_READ: u32 = 1;
+const ASYNC_READ: u64 = 1;
 
 /// Remote locking for POSIX file locks.
-const POSIX_LOCKS: u32 = 2;
+const POSIX_LOCKS: u64 = 2;
 
 /// Kernel sends file handle for fstat, etc... (not yet supported).
-const FILE_OPS: u32 = 4;
+const FILE_OPS: u64 = 4;
 
 /// Handles the O_TRUNC open flag in the filesystem.
-const ATOMIC_O_TRUNC: u32 = 8;
+const ATOMIC_O_TRUNC: u64 = 8;
 
 /// FileSystem handles lookups of "." and "..".
-const EXPORT_SUPPORT: u32 = 16;
+const EXPORT_SUPPORT: u64 = 16;
 
 /// FileSystem can handle write size larger than 4kB.
-const BIG_WRITES: u32 = 32;
+const BIG_WRITES: u64 = 32;
 
 /// Don't apply umask to file mode on create operations.
-const DONT_MASK: u32 = 64;
+const DONT_MASK: u64 = 64;
 
 /// Kernel supports splice write on the device.
-const SPLICE_WRITE: u32 = 128;
+const SPLICE_WRITE: u64 = 128;
 
 /// Kernel supports splice move on the device.
-const SPLICE_MOVE: u32 = 256;
+const SPLICE_MOVE: u64 = 256;
 
 /// Kernel supports splice read on the device.
-const SPLICE_READ: u32 = 512;
+const SPLICE_READ: u64 = 512;
 
 /// Remote locking for BSD style file locks.
-const FLOCK_LOCKS: u32 = 1024;
+const FLOCK_LOCKS: u64 = 1024;
 
 /// Kernel supports ioctl on directories.
-const HAS_IOCTL_DIR: u32 = 2048;
+const HAS_IOCTL_DIR: u64 = 2048;
 
 /// Automatically invalidate cached pages.
-const AUTO_INVAL_DATA: u32 = 4096;
+const AUTO_INVAL_DATA: u64 = 4096;
 
 /// Do READDIRPLUS (READDIR+LOOKUP in one).
-const DO_READDIRPLUS: u32 = 8192;
+const DO_READDIRPLUS: u64 = 8192;
 
 /// Adaptive readdirplus.
-const READDIRPLUS_AUTO: u32 = 16384;
+const READDIRPLUS_AUTO: u64 = 16384;
 
 /// Asynchronous direct I/O submission.
-const ASYNC_DIO: u32 = 32768;
+const ASYNC_DIO: u64 = 32768;
 
 /// Use writeback cache for buffered writes.
-const WRITEBACK_CACHE: u32 = 65536;
+const WRITEBACK_CACHE: u64 = 65536;
 
 /// Kernel supports zero-message opens.
-const NO_OPEN_SUPPORT: u32 = 131_072;
+const NO_OPEN_SUPPORT: u64 = 131_072;
 
 /// Allow parallel lookups and readdir.
-const PARALLEL_DIROPS: u32 = 262_144;
+const PARALLEL_DIROPS: u64 = 262_144;
 
 /// Fs handles killing suid/sgid/cap on write/chown/trunc.
-const HANDLE_KILLPRIV: u32 = 524_288;
+const HANDLE_KILLPRIV: u64 = 524_288;
 
 /// FileSystem supports posix acls.
-const POSIX_ACL: u32 = 1_048_576;
+const POSIX_ACL: u64 = 1_048_576;
 
 /// Reading the device after abort returns ECONNABORTED.
-const ABORT_ERROR: u32 = 2_097_152;
+const ABORT_ERROR: u64 = 2_097_152;
 
 /// Init_out.max_pages contains the max number of req pages.
-const MAX_PAGES: u32 = 4_194_304;
+const MAX_PAGES: u64 = 4_194_304;
 
 /// Cache READLINK responses
-const CACHE_SYMLINKS: u32 = 8_388_608;
+const CACHE_SYMLINKS: u64 = 8_388_608;
 
 /// Kernel supports zero-message opendir
-const NO_OPENDIR_SUPPORT: u32 = 16_777_216;
+const NO_OPENDIR_SUPPORT: u64 = 16_777_216;
 
 /// Only invalidate cached pages on explicit request
-const EXPLICIT_INVAL_DATA: u32 = 33_554_432;
+const EXPLICIT_INVAL_DATA: u64 = 33_554_432;
+
+/// init_out.map_alignment contains log2(byte alignment) for
+/// foffset and moffset fields in struct fuse_setupmapping_out and
+/// fuse_removemapping_one
+#[allow(dead_code)]
+const MAP_ALIGNMENT: u64 = 67_108_864;
 
 /// Kernel supports auto-mounting directory submounts
-const SUBMOUNTS: u32 = 134_217_728;
+const SUBMOUNTS: u64 = 134_217_728;
 
 /// Fs handles killing suid/sgid/cap on write/chown/trunc (v2).
-const HANDLE_KILLPRIV_V2: u32 = 268_435_456;
+const HANDLE_KILLPRIV_V2: u64 = 268_435_456;
 
 /// Server supports extended struct SetxattrIn
-const SETXATTR_EXT: u32 = 536_870_912;
+const SETXATTR_EXT: u64 = 536_870_912;
+
+/// Extended fuse_init_in request
+const INIT_EXT: u64 = 1_073_741_824;
+
+/// Reserved. Do not use.
+const INIT_RESERVED: u64 = 2_147_483_648;
+
+/// Add security context to create, mkdir, symlink, and mknod
+const SECURITY_CTX: u64 = 4_294_967_296;
+
+/// Use per inode DAX
+const HAS_INODE_DAX: u64 = 8_589_934_592;
 
 bitflags! {
     /// A bitfield passed in as a parameter to and returned from the `init` method of the
     /// `FileSystem` trait.
-    pub struct FsOptions: u32 {
+    pub struct FsOptions: u64 {
         /// Indicates that the filesystem supports asynchronous read requests.
         ///
         /// If this capability is not requested/available, the kernel will ensure that there is at
@@ -386,6 +417,25 @@ bitflags! {
 
         /// Server supports extended struct SetxattrIn
         const SETXATTR_EXT = SETXATTR_EXT;
+
+        /// Indicates that fuse_init_in structure has been extended and
+        /// expect extended struct coming in from kernel.
+        const INIT_EXT = INIT_EXT;
+
+        /// This bit is reserved. Don't use it.
+        const INIT_RESERVED = INIT_RESERVED;
+
+        /// Indicates that kernel is capable of sending a security
+        /// context at file creation time (create, mkdir, symlink
+        /// and mknod). This is expected to be a SELinux security
+        /// context as of now.
+        const SECURITY_CTX = SECURITY_CTX;
+
+        /// Indicates that kernel is capable of understanding
+        /// per inode dax flag sent in response to getattr
+        /// request. This will allow server to enable to
+        /// enable dax on selective files.
+        const HAS_INODE_DAX = HAS_INODE_DAX;
     }
 }
 
@@ -476,11 +526,17 @@ pub const FUSE_COMPAT_INIT_OUT_SIZE: u32 = 8;
 pub const FUSE_COMPAT_22_INIT_OUT_SIZE: u32 = 24;
 pub const FUSE_COMPAT_SETXATTR_IN_SIZE: u32 = 8;
 
+// Fsync flags
+pub const FSYNC_FDATASYNC: u32 = 1;
+
 // Attr.flags flags.
 
 /// Object is a submount root
 pub const ATTR_SUBMOUNT: u32 = 1;
+/// Indicate to kernel to enable DAX for this file in per inode DAX mode
+pub const ATTR_DAX: u32 = 2;
 
+// Open flags
 /// Kill suid and sgid if executable
 pub const OPEN_KILL_SUIDGID: u32 = 1;
 
@@ -951,13 +1007,21 @@ unsafe impl ByteValued for AccessIn {}
 
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
-pub struct InitIn {
+pub struct InitInCompat {
     pub major: u32,
     pub minor: u32,
     pub max_readahead: u32,
     pub flags: u32,
 }
-unsafe impl ByteValued for InitIn {}
+unsafe impl ByteValued for InitInCompat {}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct InitInExt {
+    pub flags2: u32,
+    pub unused: [u32; 11],
+}
+unsafe impl ByteValued for InitInExt {}
 
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -971,8 +1035,9 @@ pub struct InitOut {
     pub max_write: u32,
     pub time_gran: u32,
     pub max_pages: u16,
-    pub padding: u16,
-    pub unused: [u32; 8],
+    pub map_alignment: u16,
+    pub flags2: u32,
+    pub unused: [u32; 7],
 }
 unsafe impl ByteValued for InitOut {}
 
@@ -1242,3 +1307,21 @@ pub struct SyncfsIn {
 }
 
 unsafe impl ByteValued for SyncfsIn {}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct Secctx {
+    pub size: u32,
+    pub padding: u32,
+}
+
+unsafe impl ByteValued for Secctx {}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct SecctxHeader {
+    pub size: u32,
+    pub nr_secctx: u32,
+}
+
+unsafe impl ByteValued for SecctxHeader {}
