@@ -21,13 +21,13 @@ log = "0.4"
 libseccomp-sys = "0.2"
 structopt = "0.3"
 tempdir = "0.3"
-vhost-user-backend = "0.1"
+vhost-user-backend = "0.2"
 vhost = "0.3"
 virtio-bindings = { version = "0.1", features = ["virtio-v5_0_0"] }
 vm-memory = { version = "0.7", features = ["backend-mmap"] }
-virtio-queue = "0.1"
+virtio-queue = "0.2"
 vmm-sys-util = "0.9"
-syslog = "5.0"
+syslog = "6.0"
 
 [profile.release]
 lto = true
