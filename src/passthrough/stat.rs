@@ -7,6 +7,9 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::io::AsRawFd;
 
+mod file_status;
+use file_status::{statx_st, STATX_BASIC_STATS, STATX_MNT_ID};
+
 const EMPTY_CSTR: &[u8] = b"\0";
 
 pub type MountId = u64;
@@ -14,33 +17,6 @@ pub type MountId = u64;
 pub struct StatExt {
     pub st: libc::stat64,
     pub mnt_id: MountId,
-}
-
-pub fn stat64(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
-    let mut st = MaybeUninit::<libc::stat64>::zeroed();
-
-    // Safe because this is a constant value and a valid C string.
-    let path = path.unwrap_or_else(|| unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) });
-
-    // Safe because the kernel will only write data in `st` and we check the return
-    // value.
-    let res = unsafe {
-        libc::fstatat64(
-            dir.as_raw_fd(),
-            path.as_ptr(),
-            st.as_mut_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-        )
-    };
-    if res >= 0 {
-        Ok(StatExt {
-            // Safe because the kernel guarantees that the struct is now fully initialized.
-            st: unsafe { st.assume_init() },
-            mnt_id: 0,
-        })
-    } else {
-        Err(io::Error::last_os_error())
-    }
 }
 
 /*
@@ -57,14 +33,14 @@ trait SafeStatXAccess {
     fn mount_id(&self) -> Option<MountId>;
 }
 
-impl SafeStatXAccess for libc::statx {
+impl SafeStatXAccess for statx_st {
     fn stat64(&self) -> Option<libc::stat64> {
         fn makedev(maj: libc::c_uint, min: libc::c_uint) -> libc::dev_t {
             // Safe because there are no side effects
             unsafe { libc::makedev(maj, min) }
         }
 
-        if self.stx_mask & libc::STATX_BASIC_STATS != 0 {
+        if self.stx_mask & STATX_BASIC_STATS != 0 {
             /*
              * Unfortunately, we cannot use an initializer to create the
              * stat64 object, because it may contain padding and reserved
@@ -99,7 +75,7 @@ impl SafeStatXAccess for libc::statx {
     }
 
     fn mount_id(&self) -> Option<MountId> {
-        if self.stx_mask & libc::STATX_MNT_ID != 0 {
+        if self.stx_mask & STATX_MNT_ID != 0 {
             Some(self.stx_mnt_id)
         } else {
             None
@@ -109,7 +85,6 @@ impl SafeStatXAccess for libc::statx {
 
 // Only works on Linux, and libc::SYS_statx is only defined for these
 // environments
-#[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
 /// Performs a statx() syscall.  libc provides libc::statx() that does
 /// the same, however, the system's libc may not have a statx() wrapper
 /// (e.g. glibc before 2.28), so linking to it may fail.
@@ -120,15 +95,14 @@ unsafe fn do_statx(
     pathname: *const libc::c_char,
     flags: libc::c_int,
     mask: libc::c_uint,
-    statxbuf: *mut libc::statx,
+    statxbuf: *mut statx_st,
 ) -> libc::c_int {
     libc::syscall(libc::SYS_statx, dirfd, pathname, flags, mask, statxbuf) as libc::c_int
 }
 
 // Real statx() that depends on do_statx()
-#[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
 pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
-    let mut stx_ui = MaybeUninit::<libc::statx>::zeroed();
+    let mut stx_ui = MaybeUninit::<statx_st>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
     let path = path.unwrap_or_else(|| unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) });
@@ -140,7 +114,7 @@ pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
             dir.as_raw_fd(),
             path.as_ptr(),
             libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-            libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
+            STATX_BASIC_STATS | STATX_MNT_ID,
             stx_ui.as_mut_ptr(),
         )
     };
@@ -158,10 +132,4 @@ pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
     } else {
         Err(io::Error::last_os_error())
     }
-}
-
-// Fallback for when do_statx() is not available
-#[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
-pub fn statx(_dir: &impl AsRawFd, _path: Option<&CStr>) -> io::Result<StatExt> {
-    Err(io::Error::from_raw_os_error(libc::ENOSYS))
 }
