@@ -954,7 +954,16 @@ fn main() {
 
     drop_child_capabilities(fs_cfg.inode_file_handles, opt.modcaps);
 
-    let fs = PassthroughFs::new(fs_cfg).unwrap();
+    let fs = match PassthroughFs::new(fs_cfg) {
+        Ok(fs) => fs,
+        Err(e) => {
+            error!(
+                "Failed to create internal filesystem representation: {:?}",
+                e
+            );
+            process::exit(1);
+        }
+    };
     let fs_backend = Arc::new(VhostUserFsBackend::new(fs, thread_pool_size).unwrap());
 
     let mut daemon = VhostUserDaemon::new(
