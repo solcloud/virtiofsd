@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::convert::{self, TryFrom};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::{env, error, fmt, io, process};
 
@@ -393,6 +394,47 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
     })
 }
 
+/// On the command line, we want to allow aliases for `InodeFileHandlesMode` values.  This enum has
+/// all values allowed on the command line, and with `From`/`Into`, it can be translated into the
+/// internally used `InodeFileHandlesMode` enum.
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum InodeFileHandlesCommandLineMode {
+    /// `InodeFileHandlesMode::Never`
+    Never,
+    /// `InodeFileHandlesMode::Fallback`
+    Fallback,
+    /// Alias for `InodeFileHandlesMode::Fallback`
+    Prefer,
+    /// `InodeFileHandlesMode::Mandatory`
+    Mandatory,
+}
+
+impl From<InodeFileHandlesCommandLineMode> for InodeFileHandlesMode {
+    fn from(clm: InodeFileHandlesCommandLineMode) -> Self {
+        match clm {
+            InodeFileHandlesCommandLineMode::Never => InodeFileHandlesMode::Never,
+            InodeFileHandlesCommandLineMode::Fallback => InodeFileHandlesMode::Fallback,
+            InodeFileHandlesCommandLineMode::Prefer => InodeFileHandlesMode::Fallback,
+            InodeFileHandlesCommandLineMode::Mandatory => InodeFileHandlesMode::Mandatory,
+        }
+    }
+}
+
+impl FromStr for InodeFileHandlesCommandLineMode {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "never" => Ok(InodeFileHandlesCommandLineMode::Never),
+            "fallback" => Ok(InodeFileHandlesCommandLineMode::Fallback),
+            "prefer" => Ok(InodeFileHandlesCommandLineMode::Prefer),
+            "mandatory" => Ok(InodeFileHandlesCommandLineMode::Mandatory),
+
+            _ => Err("invalid inode file handles mode"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, StructOpt)]
 #[structopt(name = "virtiofsd backend", about = "Launch a virtiofsd backend.")]
 struct Opt {
@@ -442,14 +484,14 @@ struct Opt {
     announce_submounts: bool,
 
     /// When to use file handles to reference inodes instead of O_PATH file descriptors (never,
-    /// fallback)
+    /// prefer, mandatory)
     ///
     /// - never: Never use file handles, always use O_PATH file descriptors.
     ///
-    /// - fallback: Attempt to generate file handles, but fall back to O_PATH file descriptors
-    /// where the underlying filesystem does not support file handles.  Useful when there are
-    /// various different filesystems under the shared directory and some of them do not support
-    /// file handles.
+    /// - prefer: Attempt to generate file handles, but fall back to O_PATH file descriptors where
+    /// the underlying filesystem does not support file handles.  Useful when there are various
+    /// different filesystems under the shared directory and some of them do not support file
+    /// handles.  ("fallback" is an alias for "prefer".)
     ///
     /// - mandatory: Always use file handles, never fall back to O_PATH file descriptors.
     ///
@@ -458,7 +500,7 @@ struct Opt {
     /// only have file descriptors open for files that are open in the guest, e.g. to get around
     /// bad interactions with NFS's silly renaming.
     #[structopt(long, require_equals = true, default_value = "never")]
-    inode_file_handles: InodeFileHandlesMode,
+    inode_file_handles: InodeFileHandlesCommandLineMode,
 
     /// The caching policy the file system should use (auto, always, never)
     #[structopt(long, default_value = "auto")]
@@ -881,7 +923,7 @@ fn main() {
             proc_sfd_rawfd: sandbox.get_proc_self_fd(),
             proc_mountinfo_rawfd: sandbox.get_mountinfo_fd(),
             announce_submounts: opt.announce_submounts,
-            inode_file_handles: opt.inode_file_handles,
+            inode_file_handles: opt.inode_file_handles.into(),
             readdirplus,
             writeback: opt.writeback,
             allow_direct_io: opt.allow_direct_io,
@@ -896,7 +938,7 @@ fn main() {
         _ => enable_seccomp(opt.seccomp, opt.syslog).unwrap(),
     }
 
-    drop_child_capabilities(opt.inode_file_handles, opt.modcaps);
+    drop_child_capabilities(fs_cfg.inode_file_handles, opt.modcaps);
 
     let fs = PassthroughFs::new(fs_cfg).unwrap();
     let fs_backend = Arc::new(VhostUserFsBackend::new(fs, thread_pool_size).unwrap());

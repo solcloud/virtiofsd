@@ -227,20 +227,6 @@ pub enum InodeFileHandlesMode {
     Mandatory,
 }
 
-impl FromStr for InodeFileHandlesMode {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "never" => Ok(InodeFileHandlesMode::Never),
-            "fallback" => Ok(InodeFileHandlesMode::Fallback),
-            "mandatory" => Ok(InodeFileHandlesMode::Mandatory),
-
-            _ => Err("invalid inode file handles mode"),
-        }
-    }
-}
-
 impl Default for InodeFileHandlesMode {
     fn default() -> Self {
         InodeFileHandlesMode::Never
