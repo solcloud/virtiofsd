@@ -401,9 +401,9 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
 enum InodeFileHandlesCommandLineMode {
     /// `InodeFileHandlesMode::Never`
     Never,
-    /// `InodeFileHandlesMode::Fallback`
+    /// Alias for `InodeFileHandlesMode::Prefer`
     Fallback,
-    /// Alias for `InodeFileHandlesMode::Fallback`
+    /// `InodeFileHandlesMode::Prefer`
     Prefer,
     /// `InodeFileHandlesMode::Mandatory`
     Mandatory,
@@ -413,8 +413,8 @@ impl From<InodeFileHandlesCommandLineMode> for InodeFileHandlesMode {
     fn from(clm: InodeFileHandlesCommandLineMode) -> Self {
         match clm {
             InodeFileHandlesCommandLineMode::Never => InodeFileHandlesMode::Never,
-            InodeFileHandlesCommandLineMode::Fallback => InodeFileHandlesMode::Fallback,
-            InodeFileHandlesCommandLineMode::Prefer => InodeFileHandlesMode::Fallback,
+            InodeFileHandlesCommandLineMode::Fallback => InodeFileHandlesMode::Prefer,
+            InodeFileHandlesCommandLineMode::Prefer => InodeFileHandlesMode::Prefer,
             InodeFileHandlesCommandLineMode::Mandatory => InodeFileHandlesMode::Mandatory,
         }
     }
