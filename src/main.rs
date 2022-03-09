@@ -491,7 +491,7 @@ struct Opt {
     /// - prefer: Attempt to generate file handles, but fall back to O_PATH file descriptors where
     /// the underlying filesystem does not support file handles.  Useful when there are various
     /// different filesystems under the shared directory and some of them do not support file
-    /// handles.  ("fallback" is an alias for "prefer".)
+    /// handles.  ("fallback" is a deprecated alias for "prefer".)
     ///
     /// - mandatory: Always use file handles, never fall back to O_PATH file descriptors.
     ///
@@ -806,6 +806,9 @@ fn main() {
     }
     if opt.compat_options.is_some() {
         warn!("Use of deprecated option format '-o': Please specify options without it (e.g., '--cache auto' instead of '-o cache=auto')");
+    }
+    if opt.inode_file_handles == InodeFileHandlesCommandLineMode::Fallback {
+        warn!("Use of deprecated value 'fallback' for '--inode-file-handles': Please use 'prefer' instead");
     }
 
     let sandbox_mode = opt.sandbox.clone();
