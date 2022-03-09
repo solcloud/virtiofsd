@@ -18,7 +18,7 @@ use crate::fuse;
 use crate::passthrough::inode_store::{Inode, InodeData, InodeIds, InodeStore};
 use crate::passthrough::util::{ebadf, einval, is_safe_inode, openat, reopen_fd_through_proc};
 use crate::read_dir::ReadDir;
-use file_handle::{FileHandle, FileOrHandle};
+use file_handle::{FileHandle, FileOrHandle, OpenableFileHandle};
 use mount_fd::{MPRError, MountFds};
 use stat::{stat64, statx, StatExt};
 use std::borrow::Cow;
@@ -622,6 +622,18 @@ impl PassthroughFs {
         Ok(handle)
     }
 
+    fn make_file_handle_openable(&self, fh: &FileHandle) -> io::Result<OpenableFileHandle> {
+        fh.to_openable(&self.mount_fds, |fd, flags| {
+            reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+        })
+        .map_err(|e| {
+            if !e.silent() {
+                error!("{}", e);
+            }
+            e.into_inner()
+        })
+    }
+
     fn do_lookup(&self, parent: Inode, name: &CStr) -> io::Result<Entry> {
         let p = self
             .inodes
@@ -678,17 +690,7 @@ impl PassthroughFs {
             inode
         } else {
             let file_or_handle = if let Some(h) = handle.as_ref() {
-                FileOrHandle::Handle(
-                    h.to_openable(&self.mount_fds, |fd, flags| {
-                        reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                    })
-                    .map_err(|e| {
-                        if !e.silent() {
-                            error!("{}", e);
-                        }
-                        e.into_inner()
-                    })?,
-                )
+                FileOrHandle::Handle(self.make_file_handle_openable(h)?)
             } else {
                 FileOrHandle::File(path_fd)
             };
@@ -956,17 +958,7 @@ impl FileSystem for PassthroughFs {
         let handle = self.get_file_handle_opt(&path_fd, &st)?;
 
         let file_or_handle = if let Some(h) = handle.as_ref() {
-            FileOrHandle::Handle(
-                h.to_openable(&self.mount_fds, |fd, flags| {
-                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                })
-                .map_err(|e| {
-                    if !e.silent() {
-                        error!("{}", e);
-                    }
-                    e.into_inner()
-                })?,
-            )
+            FileOrHandle::Handle(self.make_file_handle_openable(h)?)
         } else {
             FileOrHandle::File(path_fd)
         };
