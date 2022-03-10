@@ -7,7 +7,7 @@ use libc::EFD_NONBLOCK;
 use log::*;
 use passthrough::xattrmap::XattrMap;
 use std::collections::HashSet;
-use std::convert::{self, TryFrom};
+use std::convert::{self, TryFrom, TryInto};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::sync::{Arc, RwLock};
@@ -129,8 +129,18 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
         })
     }
 
-    fn return_descriptor(vring_state: &mut VringState, head_index: u16, event_idx: bool) {
-        if vring_state.add_used(head_index, 0).is_err() {
+    fn return_descriptor(
+        vring_state: &mut VringState,
+        head_index: u16,
+        event_idx: bool,
+        len: usize,
+    ) {
+        let used_len: u32 = match len.try_into() {
+            Ok(l) => l,
+            Err(_) => panic!("Invalid used length, can't return used descritors to the ring"),
+        };
+
+        if vring_state.add_used(head_index, used_len).is_err() {
             warn!("Couldn't return used descriptors to the ring");
         }
 
@@ -186,12 +196,12 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
                     .map_err(Error::QueueWriter)
                     .unwrap();
 
-                server
+                let len = server
                     .handle_message(reader, writer, vu_req.as_mut())
                     .map_err(Error::ProcessQueue)
                     .unwrap();
 
-                Self::return_descriptor(&mut worker_vring.get_mut(), head_index, event_idx);
+                Self::return_descriptor(&mut worker_vring.get_mut(), head_index, event_idx, len);
             });
         }
 
@@ -224,12 +234,13 @@ impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
                 .map_err(Error::QueueWriter)
                 .unwrap();
 
-            self.server
+            let len = self
+                .server
                 .handle_message(reader, writer, vu_req.as_mut())
                 .map_err(Error::ProcessQueue)
                 .unwrap();
 
-            Self::return_descriptor(vring_state, head_index, self.event_idx);
+            Self::return_descriptor(vring_state, head_index, self.event_idx, len);
         }
 
         Ok(used_any)
