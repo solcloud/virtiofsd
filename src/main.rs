@@ -400,7 +400,7 @@ struct Opt {
     #[structopt(long)]
     shared_dir: Option<String>,
 
-    /// vhost-user socket path (deprecated)
+    /// vhost-user socket path [deprecated]
     #[structopt(long, required_unless_one = &["fd", "socket-path", "print-capabilities"])]
     socket: Option<String>,
 
@@ -484,11 +484,11 @@ struct Opt {
     #[structopt(long)]
     modcaps: Option<String>,
 
-    /// Log level (error, warn, info, debug, trace)
+    /// Log level (error, warn, info, debug, trace, off)
     #[structopt(long = "log-level", default_value = "info")]
     log_level: LevelFilter,
 
-    /// Log to syslog (default stderr)
+    /// Log to syslog [default: stderr]
     #[structopt(long)]
     syslog: bool,
 
@@ -496,11 +496,11 @@ struct Opt {
     #[structopt(long = "rlimit-nofile")]
     rlimit_nofile: Option<u64>,
 
-    /// Options in a format compatible with the legacy implementation (deprecated)
+    /// Options in a format compatible with the legacy implementation [deprecated]
     #[structopt(short = "o")]
     compat_options: Option<Vec<String>>,
 
-    /// Set log level to "debug" (deprecated)
+    /// Set log level to "debug" [deprecated]
     #[structopt(short = "d")]
     compat_debug: bool,
 
@@ -508,7 +508,7 @@ struct Opt {
     #[structopt(long)]
     no_killpriv_v2: bool,
 
-    /// Compatibility option that has no effect (deprecated)
+    /// Compatibility option that has no effect [deprecated]
     #[structopt(short = "f")]
     compat_foreground: bool,
 }
