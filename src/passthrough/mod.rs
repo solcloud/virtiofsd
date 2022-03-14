@@ -221,24 +221,10 @@ pub enum InodeFileHandlesMode {
 
     /// Attempt to generate file handles, but fall back to `O_PATH` file descriptors where the
     /// underlying filesystem does not support file handles.
-    Fallback,
+    Prefer,
 
     /// Always use file handles, never fall back to `O_PATH` file descriptors.
     Mandatory,
-}
-
-impl FromStr for InodeFileHandlesMode {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "never" => Ok(InodeFileHandlesMode::Never),
-            "fallback" => Ok(InodeFileHandlesMode::Fallback),
-            "mandatory" => Ok(InodeFileHandlesMode::Mandatory),
-
-            _ => Err("invalid inode file handles mode"),
-        }
-    }
 }
 
 impl Default for InodeFileHandlesMode {
@@ -343,9 +329,9 @@ pub struct Config {
     /// when necessary.
     /// So this switch allows to choose between the alternatives: When set to `Never`, `InodeData`
     /// will store `O_PATH` FDs.  Otherwise, we will attempt to generate and store a file handle
-    /// instead.  With `Fallback`, errors that are inherent to file handles (like no support from
-    /// the underlying filesystem) lead to falling back to `O_PATH` FDs, and only generic errors
-    /// (like `ENOENT` or `ENOMEM`) are passed to the guest.  `Mandatory` enforces the use of file
+    /// instead.  With `Prefer`, errors that are inherent to file handles (like no support from the
+    /// underlying filesystem) lead to falling back to `O_PATH` FDs, and only generic errors (like
+    /// `ENOENT` or `ENOMEM`) are passed to the guest.  `Mandatory` enforces the use of file
     /// handles, returning all errors to the guest.
     ///
     /// The default is `Never`.
@@ -564,14 +550,14 @@ impl PassthroughFs {
     ///
     /// This function takes the chosen `self.cfg.inode_file_handles` mode into account:
     /// - `Never`: Always return `Ok(None)`.
-    /// - `Fallback`: Return `Ok(None)` when file handles are not supported by this filesystem.
-    ///               Otherwise, return either `Ok(Some(_))` or `Err(_)`, depending on whether a
-    ///               file handle could be generated or not.
+    /// - `Prefer`: Return `Ok(None)` when file handles are not supported by this filesystem.
+    ///             Otherwise, return either `Ok(Some(_))` or `Err(_)`, depending on whether a file
+    ///             handle could be generated or not.
     /// - `Mandatory`: Never return `Ok(None)`.  When the filesystem does not support file handles,
     ///                return an `Err(_)`.
     ///
     /// When the filesystem does not support file handles, this is logged (as a warning in
-    /// `Fallback` mode, and as an error in `Mandatory` mode) one time per filesystem.
+    /// `Prefer` mode, and as an error in `Mandatory` mode) one time per filesystem.
     fn get_file_handle_opt(
         &self,
         fd: &impl AsRawFd,
@@ -583,7 +569,7 @@ impl PassthroughFs {
                 return Ok(None);
             }
 
-            InodeFileHandlesMode::Fallback | InodeFileHandlesMode::Mandatory => {
+            InodeFileHandlesMode::Prefer | InodeFileHandlesMode::Mandatory => {
                 FileHandle::from_fd(fd)?
             }
         };
@@ -594,7 +580,7 @@ impl PassthroughFs {
 
             let desc = match self.cfg.inode_file_handles {
                 InodeFileHandlesMode::Never => unreachable!(),
-                InodeFileHandlesMode::Fallback => {
+                InodeFileHandlesMode::Prefer => {
                     "Filesystem does not support file handles, falling back to O_PATH FDs"
                 }
                 InodeFileHandlesMode::Mandatory => "Filesystem does not support file handles",
@@ -614,12 +600,12 @@ impl PassthroughFs {
             }
             .set_desc(desc.to_string());
 
-            // In `Fallback` mode, warn; in `Mandatory` mode, log and return an error.
+            // In `Prefer` mode, warn; in `Mandatory` mode, log and return an error.
             // (Suppress logging if the error is silenced, which means that we have already logged
             // a warning/error for this filesystem.)
             match self.cfg.inode_file_handles {
                 InodeFileHandlesMode::Never => unreachable!(),
-                InodeFileHandlesMode::Fallback => {
+                InodeFileHandlesMode::Prefer => {
                     if !err.silent() {
                         warn!("{}", err);
                     }
