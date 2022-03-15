@@ -1120,7 +1120,7 @@ impl FileSystem for PassthroughFs {
         parent: Inode,
         name: &CStr,
         mode: u32,
-        umask: u32,
+        _umask: u32,
     ) -> io::Result<Entry> {
         let data = self
             .inodes
@@ -1136,7 +1136,7 @@ impl FileSystem for PassthroughFs {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
 
             // Safe because this doesn't modify any memory and we check the return value.
-            unsafe { libc::mkdirat(parent_file.as_raw_fd(), name.as_ptr(), mode & !umask) }
+            unsafe { libc::mkdirat(parent_file.as_raw_fd(), name.as_ptr(), mode) }
         };
         if res == 0 {
             self.do_lookup(parent, name)
@@ -1203,7 +1203,7 @@ impl FileSystem for PassthroughFs {
         mode: u32,
         kill_priv: bool,
         flags: u32,
-        umask: u32,
+        _umask: u32,
     ) -> io::Result<(Entry, Option<Handle>, OpenOptions)> {
         let data = self
             .inodes
@@ -1233,7 +1233,7 @@ impl FileSystem for PassthroughFs {
                         | libc::O_CLOEXEC
                         | libc::O_NOFOLLOW
                         | libc::O_EXCL,
-                    mode & !(umask & 0o777),
+                    mode,
                 )
             }
         };
@@ -1595,7 +1595,7 @@ impl FileSystem for PassthroughFs {
         name: &CStr,
         mode: u32,
         rdev: u32,
-        umask: u32,
+        _umask: u32,
     ) -> io::Result<Entry> {
         let data = self
             .inodes
@@ -1615,7 +1615,7 @@ impl FileSystem for PassthroughFs {
                 libc::mknodat(
                     parent_file.as_raw_fd(),
                     name.as_ptr(),
-                    (mode & !umask) as libc::mode_t,
+                    mode as libc::mode_t,
                     u64::from(rdev),
                 )
             }
