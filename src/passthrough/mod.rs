@@ -912,7 +912,17 @@ impl PassthroughFs {
         }
     }
 
+    fn block_xattr(&self, name: &[u8]) -> bool {
+        let acl_access = "system.posix_acl_access".as_bytes();
+        let acl_default = "system.posix_acl_default".as_bytes();
+        acl_access.starts_with(name) || acl_default.starts_with(name)
+    }
+
     fn map_client_xattrname<'a>(&self, name: &'a CStr) -> std::io::Result<Cow<'a, CStr>> {
+        if self.block_xattr(name.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+        }
+
         match &self.cfg.xattrmap {
             Some(map) => match map.map_client_xattr(name).expect("unterminated mapping") {
                 AppliedRule::Deny => Err(io::Error::from_raw_os_error(libc::EPERM)),
@@ -921,6 +931,33 @@ impl PassthroughFs {
             },
             None => Ok(Cow::Borrowed(name)),
         }
+    }
+
+    fn map_server_xattrlist(&self, xattr_names: Vec<u8>) -> Vec<u8> {
+        let all_xattrs = match &self.cfg.xattrmap {
+            Some(map) => map
+                .map_server_xattrlist(xattr_names)
+                .expect("unterminated mapping"),
+            None => xattr_names,
+        };
+
+        // filter out the blocked xattrs
+        let mut filtered = Vec::with_capacity(all_xattrs.len());
+        let all_xattrs = all_xattrs.split(|b| *b == 0).filter(|bs| !bs.is_empty());
+
+        for xattr in all_xattrs {
+            if !self.block_xattr(xattr) {
+                filtered.extend_from_slice(xattr);
+                filtered.push(0);
+            }
+        }
+
+        if filtered.is_empty() {
+            filtered.push(0);
+        }
+        filtered.shrink_to_fit();
+
+        filtered
     }
 
     fn drop_security_capability(&self, fd: libc::c_int) -> io::Result<()> {
@@ -2054,11 +2091,7 @@ impl FileSystem for PassthroughFs {
             Ok(ListxattrReply::Count(res as u32))
         } else {
             buf.resize(res as usize, 0);
-            let buf = match &self.cfg.xattrmap {
-                Some(map) => map.map_server_xattrlist(buf).expect("unterminated mapping"),
-                None => buf,
-            };
-
+            let buf = self.map_server_xattrlist(buf);
             Ok(ListxattrReply::Names(buf))
         }
     }
