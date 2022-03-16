@@ -507,6 +507,10 @@ struct Opt {
     #[structopt(long)]
     xattr: bool,
 
+    /// Enable support for posix ACLs (implies --xattr)
+    #[structopt(long)]
+    posix_acl: bool,
+
     /// Add custom rules for translating extended attributes between host and guest
     /// (e.g. :map::user.virtiofs.:)
     #[structopt(long, parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
@@ -658,6 +662,8 @@ fn parse_compat(opt: Opt) -> Opt {
             "announce_submounts" => opt.announce_submounts = true,
             "killpriv_v2" => opt.no_killpriv_v2 = false,
             "no_killpriv_v2" => opt.no_killpriv_v2 = true,
+            "posix_acl" => opt.posix_acl = true,
+            "no_posix_acl" => opt.posix_acl = false,
             "no_posix_lock" | "no_flock" => (),
             _ => argument_error(option),
         }
@@ -855,7 +861,7 @@ fn main() {
 
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
-    let xattr = if xattrmap.is_some() { true } else { opt.xattr };
+    let xattr = xattrmap.is_some() || opt.posix_acl || opt.xattr;
     let thread_pool_size = opt.thread_pool_size;
     let readdirplus = match opt.cache {
         CachePolicy::Never => false,
@@ -967,6 +973,7 @@ fn main() {
             writeback: opt.writeback,
             allow_direct_io: opt.allow_direct_io,
             killpriv_v2,
+            posix_acl: opt.posix_acl,
             ..Default::default()
         },
     };
