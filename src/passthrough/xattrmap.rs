@@ -315,6 +315,43 @@ impl Rule {
             }
         })
     }
+
+    fn expand_map_type(rule: Self) -> Vec<Self> {
+        assert_eq!(rule.type_, Type::Map);
+
+        // 1st: Prefix matches/everything
+        let mut rules = vec![Rule {
+            type_: Type::Prefix,
+            scope: Scope::CLIENT | Scope::SERVER,
+            key: rule.key.clone(),
+            prepend: rule.prepend.clone(),
+        }];
+
+        let last_rule_type = if !rule.key.as_bytes().is_empty() {
+            // 2nd: Hide non-prefixed but matching entries on the host, and
+            // stop the client accessing prefixed attributes directly
+            rules.push(Rule {
+                type_: Type::Bad,
+                scope: Scope::CLIENT | Scope::SERVER,
+                key: rule.prepend,
+                prepend: rule.key,
+            });
+
+            Type::Okay
+        } else {
+            Type::Bad
+        };
+
+        // Last: Everything else
+        rules.push(Rule {
+            type_: last_rule_type,
+            scope: Scope::CLIENT | Scope::SERVER,
+            key: CString::new("").unwrap(),
+            prepend: CString::new("").unwrap(),
+        });
+
+        rules
+    }
 }
 
 /// A return value that indicates the xattr name input has passed through
@@ -354,11 +391,12 @@ impl XattrMap {
             Type::Okay => AppliedRule::Pass(Cow::Borrowed(xattr_name)),
             Type::Bad => AppliedRule::Deny,
             Type::Unsupported => AppliedRule::Unsupported,
-            Type::Map | Type::Prefix => {
+            Type::Prefix => {
                 let mut concat = rule.prepend.as_bytes().to_vec();
                 concat.extend_from_slice(xattr_name.to_bytes());
                 AppliedRule::Pass(Cow::Owned(CString::new(concat).unwrap()))
             }
+            Type::Map => panic!("Unexpanded MAP rule was found."),
         })
     }
 
@@ -380,7 +418,8 @@ impl XattrMap {
             let processed = match rule.type_ {
                 Type::Bad | Type::Unsupported => continue, // hide this from the client
                 Type::Okay => xattr_name,
-                Type::Map | Type::Prefix => &xattr_name[rule.prepend.as_bytes().len()..], // strip prefix
+                Type::Prefix => &xattr_name[rule.prepend.as_bytes().len()..], // strip prefix
+                Type::Map => panic!("Unexpanded MAP rule was found."),
             };
 
             filtered.extend_from_slice(processed);
@@ -432,26 +471,23 @@ impl TryFrom<&str> for XattrMap {
                 cause: e,
                 rule: Some(rules.len() + 1),
             })?;
-            rules.push(rule);
+
+            if rule.type_ == Type::Map {
+                // There may only be one 'map' rule and it must be the final rule
+                if unparsed.peek().is_some() {
+                    return Err(Error {
+                        rule: Some(rules.len() + 1),
+                        cause: ErrorKind::MapRuleViolation,
+                    });
+                }
+                rules.append(&mut Rule::expand_map_type(rule));
+            } else {
+                rules.push(rule);
+            };
         }
 
         if rules.is_empty() {
             return Err(ErrorKind::NoRulesProvided.into());
-        }
-
-        // There may only be one 'map' rule and it must be the final rule
-        let last_idx = rules.len() - 1;
-        let map_violation = rules
-            .iter()
-            .enumerate()
-            .filter(|(i, r)| r.type_ == Type::Map && !i.eq(&last_idx))
-            .map(|(i, _)| i + 1)
-            .next();
-        if let Some(idx) = map_violation {
-            return Err(Error {
-                rule: Some(idx),
-                cause: ErrorKind::MapRuleViolation,
-            });
         }
 
         Ok(Self { rules })
@@ -562,6 +598,58 @@ mod tests {
         let expected = Error {
             rule: Some(1),
             cause: ErrorKind::MapRuleViolation,
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_parser_expands_map_rule_with_empty_key() {
+        let input = ":map::user.virtiofs.:";
+        let actual = XattrMap::try_from(input).unwrap();
+        let expected = XattrMap {
+            rules: vec![
+                Rule {
+                    type_: Type::Prefix,
+                    scope: Scope::CLIENT | Scope::SERVER,
+                    key: CString::new("").unwrap(),
+                    prepend: CString::new("user.virtiofs.").unwrap(),
+                },
+                Rule {
+                    type_: Type::Bad,
+                    scope: Scope::CLIENT | Scope::SERVER,
+                    key: CString::new("").unwrap(),
+                    prepend: CString::new("").unwrap(),
+                },
+            ],
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_parser_expands_map_rule_with_key_and_prepend() {
+        let input = ":map:trusted.:user.virtiofs.:";
+        let actual = XattrMap::try_from(input).unwrap();
+        let expected = XattrMap {
+            rules: vec![
+                Rule {
+                    type_: Type::Prefix,
+                    scope: Scope::CLIENT | Scope::SERVER,
+                    key: CString::new("trusted.").unwrap(),
+                    prepend: CString::new("user.virtiofs.").unwrap(),
+                },
+                Rule {
+                    type_: Type::Bad,
+                    scope: Scope::CLIENT | Scope::SERVER,
+                    key: CString::new("user.virtiofs.").unwrap(),
+                    prepend: CString::new("trusted.").unwrap(),
+                },
+                Rule {
+                    type_: Type::Okay,
+                    scope: Scope::CLIENT | Scope::SERVER,
+                    key: CString::new("").unwrap(),
+                    prepend: CString::new("").unwrap(),
+                },
+            ],
         };
         assert_eq!(actual, expected);
     }
