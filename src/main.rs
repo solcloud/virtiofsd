@@ -68,11 +68,25 @@ enum Error {
     QueueReader(VufDescriptorError),
     /// Creating a queue writer failed.
     QueueWriter(VufDescriptorError),
+    /// The unshare(CLONE_FS) call failed.
+    UnshareCloneFs(io::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "virtiofsd_error: {:?}", self)
+        use self::Error::UnshareCloneFs;
+        match self {
+            UnshareCloneFs(error) => {
+                write!(
+                    f,
+                    "The unshare(CLONE_FS) syscall failed with '{}'. \
+                    If running in a container please check that the container \
+                    runtime seccomp policy allows unshare.",
+                    error
+                )
+            }
+            _ => write!(f, "{:?}", self),
+        }
     }
 }
 
@@ -109,9 +123,25 @@ impl<F: FileSystem + Send + Sync + 'static> Clone for VhostUserFsThread<F> {
 
 impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
     fn new(fs: F, thread_pool_size: usize) -> Result<Self> {
+        // Test that unshare(CLONE_FS) works, it will be called for each thread.
+        // It's an unprivileged system call but some Docker/Moby versions are
+        // known to reject it via seccomp when CAP_SYS_ADMIN is not given.
+        //
+        // Note that the program is single-threaded here so this syscall has no
+        // visible effect and is safe to make.
+        let ret = unsafe { libc::unshare(libc::CLONE_FS) };
+        if ret == -1 {
+            return Err(Error::UnshareCloneFs(std::io::Error::last_os_error()));
+        }
+
         let pool = if thread_pool_size > 0 {
             Some(
                 ThreadPoolBuilder::new()
+                    .after_start(|_| {
+                        // unshare FS for xattr operation
+                        let ret = unsafe { libc::unshare(libc::CLONE_FS) };
+                        assert_eq!(ret, 0); // Should not fail
+                    })
                     .pool_size(thread_pool_size)
                     .create()
                     .map_err(Error::CreateThreadPool)?,
@@ -959,7 +989,13 @@ fn main() {
             process::exit(1);
         }
     };
-    let fs_backend = Arc::new(VhostUserFsBackend::new(fs, thread_pool_size).unwrap());
+
+    let fs_backend = Arc::new(
+        VhostUserFsBackend::new(fs, thread_pool_size).unwrap_or_else(|error| {
+            error!("Error creating vhost-user backend: {}", error);
+            process::exit(1)
+        }),
+    );
 
     let mut daemon = VhostUserDaemon::new(
         String::from("virtiofsd-backend"),
