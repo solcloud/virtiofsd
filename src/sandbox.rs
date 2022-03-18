@@ -64,12 +64,6 @@ pub enum Error {
     UmountTempDir(io::Error),
     /// Call to libc::unshare returned an error.
     Unshare(io::Error),
-    /// Failed to read from procfs.
-    ReadProc(io::Error),
-    /// Failed to parse `/proc/sys/fs/nr_open`.
-    InvalidNrOpen(std::num::ParseIntError),
-    /// Failed to set rlimit.
-    SetRlimit(io::Error),
     /// Failed to write to `/proc/self/gid_map`.
     WriteGidMap(io::Error),
     /// Failed to write to `/proc/self/setgroups`.
@@ -130,16 +124,10 @@ pub struct Sandbox {
     mountinfo_fd: Option<File>,
     /// Mechanism to be used for setting up the sandbox.
     sandbox_mode: SandboxMode,
-    /// Value to set as RLIMIT_NOFILE
-    rlimit_nofile: Option<u64>,
 }
 
 impl Sandbox {
-    pub fn new(
-        shared_dir: String,
-        sandbox_mode: SandboxMode,
-        rlimit_nofile: Option<u64>,
-    ) -> io::Result<Self> {
+    pub fn new(shared_dir: String, sandbox_mode: SandboxMode) -> io::Result<Self> {
         let shared_dir_rp = fs::canonicalize(shared_dir)?;
         let shared_dir_rp_str = shared_dir_rp
             .to_str()
@@ -150,7 +138,6 @@ impl Sandbox {
             proc_self_fd: None,
             mountinfo_fd: None,
             sandbox_mode,
-            rlimit_nofile,
         })
     }
 
@@ -352,36 +339,6 @@ impl Sandbox {
         Ok(())
     }
 
-    /// Sets the limit of open files to the optionally configured value, or to the max possible
-    /// otherwise.
-    fn setup_nofile_rlimit(&self) -> Result<(), Error> {
-        let rlimit_nofile = match self.rlimit_nofile {
-            Some(rlimit_nofile) => rlimit_nofile,
-            None => {
-                // /proc/sys/fs/nr_open is a sysctl file that shows the maximum number
-                // of file-handles a process can allocate.
-                let path = "/proc/sys/fs/nr_open";
-                let max_str = fs::read_to_string(path).map_err(Error::ReadProc)?;
-                max_str.trim().parse().map_err(Error::InvalidNrOpen)?
-            }
-        };
-        self.setup_nofile_rlimit_to(rlimit_nofile)
-    }
-
-    /// Sets the limit of open files to the given value.
-    fn setup_nofile_rlimit_to(&self, rlimit_nofile: u64) -> Result<(), Error> {
-        let limit = libc::rlimit {
-            rlim_cur: rlimit_nofile,
-            rlim_max: rlimit_nofile,
-        };
-        let ret = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
-        if ret < 0 {
-            Err(Error::SetRlimit(std::io::Error::last_os_error()))
-        } else {
-            Ok(())
-        }
-    }
-
     /// Sets 1-to-1 mappings for the current uid and gid.
     fn setup_id_mappings(&self, uid: u32, gid: u32) -> Result<(), Error> {
         // To be able to set up the gid mapping, we're required to disable setgroups(2) first.
@@ -435,9 +392,7 @@ impl Sandbox {
                 // This is the child. Request to receive SIGTERM on parent's death.
                 // FIXME: Race condition: the parent process might have died already.
                 unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) };
-                if uid == 0 {
-                    self.setup_nofile_rlimit()?;
-                } else {
+                if uid != 0 {
                     self.setup_id_mappings(uid, gid)?;
                 }
                 self.setup_mounts()?;
@@ -452,9 +407,6 @@ impl Sandbox {
     }
 
     pub fn enter_chroot(&mut self) -> Result<Option<i32>, Error> {
-        if let Some(rlimit_nofile) = self.rlimit_nofile {
-            self.setup_nofile_rlimit_to(rlimit_nofile)?;
-        }
         let c_proc_self_fd = CString::new("/proc/self/fd").unwrap();
         let proc_self_fd = unsafe { libc::open(c_proc_self_fd.as_ptr(), libc::O_PATH) };
         if proc_self_fd < 0 {
