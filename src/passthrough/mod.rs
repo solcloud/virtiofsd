@@ -20,7 +20,7 @@ use crate::passthrough::util::{ebadf, einval, is_safe_inode, openat, reopen_fd_t
 use crate::read_dir::ReadDir;
 use file_handle::{FileHandle, FileOrHandle};
 use mount_fd::{MPRError, MountFds};
-use stat::{stat64, statx, StatExt};
+use stat::{statx, StatExt};
 use std::borrow::Cow;
 use std::collections::{btree_map, BTreeMap};
 use std::ffi::{CStr, CString};
@@ -414,9 +414,6 @@ pub struct PassthroughFs {
     // enabled in the configuration)
     announce_submounts: AtomicBool,
 
-    // Whether the statx() system call is available.
-    use_statx: bool,
-
     cfg: Config,
 }
 
@@ -448,12 +445,6 @@ impl PassthroughFs {
             )?
         };
 
-        // Check for statx() system call
-        let use_statx = match statx(&proc_self_fd, None) {
-            Ok(_) => true,
-            Err(err) => !matches!(err.raw_os_error(), Some(libc::ENOSYS)),
-        };
-
         let mut fs = PassthroughFs {
             inodes: RwLock::new(Default::default()),
             next_inode: AtomicU64::new(fuse::ROOT_ID + 1),
@@ -464,7 +455,6 @@ impl PassthroughFs {
             root_fd,
             writeback: AtomicBool::new(false),
             announce_submounts: AtomicBool::new(false),
-            use_statx,
             cfg,
         };
 
@@ -483,14 +473,6 @@ impl PassthroughFs {
 
     pub fn keep_fds(&self) -> Vec<RawFd> {
         vec![self.proc_self_fd.as_raw_fd()]
-    }
-
-    fn stat(&self, dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
-        if self.use_statx {
-            statx(dir, path)
-        } else {
-            stat64(dir, path)
-        }
     }
 
     fn find_handle(&self, handle: Handle, inode: Inode) -> io::Result<Arc<HandleData>> {
@@ -650,7 +632,7 @@ impl PassthroughFs {
             unsafe { File::from_raw_fd(fd) }
         };
 
-        let st = self.stat(&path_fd, None)?;
+        let st = statx(&path_fd, None)?;
 
         // Note that this will always be `None` if `cfg.inode_file_handles` is `Never`, but we only
         // really need the handle when we do not have an `O_PATH` fd open for every inode.  So if
@@ -842,7 +824,7 @@ impl PassthroughFs {
             .ok_or_else(ebadf)?;
 
         let inode_file = data.get_file()?;
-        let st = self.stat(&inode_file, None)?.st;
+        let st = statx(&inode_file, None)?.st;
 
         Ok((st, self.cfg.attr_timeout))
     }
@@ -952,7 +934,7 @@ impl FileSystem for PassthroughFs {
             libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )?;
 
-        let st = self.stat(&path_fd, None)?;
+        let st = statx(&path_fd, None)?;
         let handle = self.get_file_handle_opt(&path_fd, &st)?;
 
         let file_or_handle = if let Some(h) = handle.as_ref() {
@@ -1773,7 +1755,7 @@ impl FileSystem for PassthroughFs {
             .ok_or_else(ebadf)?;
 
         let inode_file = data.get_file()?;
-        let st = self.stat(&inode_file, None)?.st;
+        let st = statx(&inode_file, None)?.st;
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
         if mode == libc::F_OK {
