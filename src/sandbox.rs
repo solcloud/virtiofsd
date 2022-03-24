@@ -409,6 +409,21 @@ impl Sandbox {
             libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::CLONE_NEWNET | libc::CLONE_NEWUSER
         };
 
+        // Drop supplemental groups. This is running as root and will
+        // support arbitrary uid/gid switching and we don't want to
+        // retain membership of any supplementary groups.
+        //
+        // This is not necessarily required for non-root case, where
+        // unprivileged user has started us, we will setup one user
+        // namespace with 1:1 mapping and there is no arbitrary uid/gid
+        // switching at all. In this mode setgroups() is not allowed, so
+        // we can't drop supplementary groups even if wanted to. Only
+        // way to do this will be to use newuidmap/newgidmap to setup
+        // user namespace which will allow setgroups().
+        if uid == 0 {
+            self.drop_supplemental_groups()?;
+        }
+
         let ret = unsafe { libc::unshare(flags) };
         if ret != 0 {
             return Err(Error::Unshare(std::io::Error::last_os_error()));
@@ -498,8 +513,9 @@ impl Sandbox {
         }
 
         // Unconditionally drop supplemental groups for every sandbox mode.
-        self.drop_supplemental_groups()?;
-
+        if self.sandbox_mode != SandboxMode::Namespace {
+            self.drop_supplemental_groups()?;
+        }
         match self.sandbox_mode {
             SandboxMode::Namespace => self.enter_namespace(),
             SandboxMode::Chroot => self.enter_chroot(),
