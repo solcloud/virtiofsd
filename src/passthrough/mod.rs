@@ -18,7 +18,7 @@ use crate::fuse;
 use crate::passthrough::inode_store::{Inode, InodeData, InodeIds, InodeStore};
 use crate::passthrough::util::{ebadf, einval, is_safe_inode, openat, reopen_fd_through_proc};
 use crate::read_dir::ReadDir;
-use file_handle::{FileHandle, FileOrHandle};
+use file_handle::{FileHandle, FileOrHandle, OpenableFileHandle};
 use mount_fd::{MPRError, MountFds};
 use stat::{statx, StatExt};
 use std::borrow::Cow;
@@ -468,6 +468,8 @@ impl PassthroughFs {
             .filter(|n| !sec_xattr.eq(n))
             .map(CString::from);
 
+        fs.check_working_file_handles()?;
+
         Ok(fs)
     }
 
@@ -604,6 +606,72 @@ impl PassthroughFs {
         Ok(handle)
     }
 
+    fn make_file_handle_openable(&self, fh: &FileHandle) -> io::Result<OpenableFileHandle> {
+        fh.to_openable(&self.mount_fds, |fd, flags| {
+            reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
+        })
+        .map_err(|e| {
+            if !e.silent() {
+                error!("{}", e);
+            }
+            e.into_inner()
+        })
+    }
+
+    fn check_working_file_handles(&mut self) -> io::Result<()> {
+        if self.cfg.inode_file_handles == InodeFileHandlesMode::Never {
+            // No need to check anything
+            return Ok(());
+        }
+
+        // Try to open the root directory, turn it into a file handle, then try to open that file
+        // handle to see whether file handles do indeed work
+        // (Note that we pass through all I/O errors to the caller, because `PassthroughFs::init()`
+        // will do these calls (`openat()`, `stat()`, etc.) anyway, so if they do not work now,
+        // they probably are not going to work later either.  Better to report errors early then.)
+        let root_dir = openat(
+            &libc::AT_FDCWD,
+            self.cfg.root_dir.as_str(),
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )?;
+
+        let st = self.stat(&root_dir, None)?;
+        if let Some(h) = self.get_file_handle_opt(&root_dir, &st)? {
+            // Got an openable file handle, try opening it
+            match self.make_file_handle_openable(&h)?.open(libc::O_PATH) {
+                Ok(_) => (),
+                Err(e) => match self.cfg.inode_file_handles {
+                    InodeFileHandlesMode::Never => unreachable!(),
+                    InodeFileHandlesMode::Prefer => {
+                        warn!("Failed to open file handle for the root node: {}", e);
+                        warn!("File handles do not appear safe to use, disabling file handles altogether");
+                        self.cfg.inode_file_handles = InodeFileHandlesMode::Never;
+                    }
+                    InodeFileHandlesMode::Mandatory => {
+                        error!("Failed to open file handle for the root node: {}", e);
+                        error!("Refusing to use (mandatory) file handles, as they do not appear safe to use");
+                        return Err(e);
+                    }
+                },
+            }
+        } else {
+            // Did not get an openable file handle (nor an error), so we cannot be in `mandatory`
+            // mode.  We also cannot be in `never` mode, because that is sorted out at the very
+            // beginning of this function.  Still, use `match` so the compiler could warn us if we
+            // were to forget some (future?) variant.
+            match self.cfg.inode_file_handles {
+                InodeFileHandlesMode::Never => unreachable!(),
+                InodeFileHandlesMode::Prefer => {
+                    warn!("Failed to generate a file handle for the root node, disabling file handles altogether");
+                    self.cfg.inode_file_handles = InodeFileHandlesMode::Never;
+                }
+                InodeFileHandlesMode::Mandatory => unreachable!(),
+            }
+        }
+
+        Ok(())
+    }
+
     fn do_lookup(&self, parent: Inode, name: &CStr) -> io::Result<Entry> {
         let p = self
             .inodes
@@ -660,17 +728,7 @@ impl PassthroughFs {
             inode
         } else {
             let file_or_handle = if let Some(h) = handle.as_ref() {
-                FileOrHandle::Handle(
-                    h.to_openable(&self.mount_fds, |fd, flags| {
-                        reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                    })
-                    .map_err(|e| {
-                        if !e.silent() {
-                            error!("{}", e);
-                        }
-                        e.into_inner()
-                    })?,
-                )
+                FileOrHandle::Handle(self.make_file_handle_openable(h)?)
             } else {
                 FileOrHandle::File(path_fd)
             };
@@ -938,17 +996,7 @@ impl FileSystem for PassthroughFs {
         let handle = self.get_file_handle_opt(&path_fd, &st)?;
 
         let file_or_handle = if let Some(h) = handle.as_ref() {
-            FileOrHandle::Handle(
-                h.to_openable(&self.mount_fds, |fd, flags| {
-                    reopen_fd_through_proc(&fd, flags, &self.proc_self_fd)
-                })
-                .map_err(|e| {
-                    if !e.silent() {
-                        error!("{}", e);
-                    }
-                    e.into_inner()
-                })?,
-            )
+            FileOrHandle::Handle(self.make_file_handle_openable(h)?)
         } else {
             FileOrHandle::File(path_fd)
         };
