@@ -635,7 +635,7 @@ impl PassthroughFs {
             libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )?;
 
-        let st = self.stat(&root_dir, None)?;
+        let st = statx(&root_dir, None)?;
         if let Some(h) = self.get_file_handle_opt(&root_dir, &st)? {
             // Got an openable file handle, try opening it
             match self.make_file_handle_openable(&h)?.open(libc::O_PATH) {
