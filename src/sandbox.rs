@@ -70,6 +70,12 @@ pub enum Error {
     InvalidNrOpen(std::num::ParseIntError),
     /// Failed to set rlimit.
     SetRlimit(io::Error),
+    /// Failed to write to `/proc/self/gid_map`.
+    WriteGidMap(io::Error),
+    /// Failed to write to `/proc/self/setgroups`.
+    WriteSetGroups(io::Error),
+    /// Failed to write to `/proc/self/uid_map`.
+    WriteUidMap(io::Error),
     /// Sandbox mode unavailable for non-privileged users
     SandboxModeInvalidUID,
 }
@@ -376,8 +382,23 @@ impl Sandbox {
         }
     }
 
+    /// Sets 1-to-1 mappings for the current uid and gid.
+    fn setup_id_mappings(&self, uid: u32, gid: u32) -> Result<(), Error> {
+        // To be able to set up the gid mapping, we're required to disable setgroups(2) first.
+        fs::write("/proc/self/setgroups", "deny\n").map_err(Error::WriteSetGroups)?;
+
+        // Set up 1-to-1 mappings for our uid and gid.
+        let uid_mapping = format!("{} {} 1\n", uid, uid);
+        fs::write("/proc/self/uid_map", uid_mapping).map_err(Error::WriteUidMap)?;
+
+        let gid_mapping = format!("{} {} 1\n", gid, gid);
+        fs::write("/proc/self/gid_map", gid_mapping).map_err(Error::WriteGidMap)?;
+        Ok(())
+    }
+
     pub fn enter_namespace(&mut self) -> Result<Option<i32>, Error> {
         let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
 
         let flags = if uid == 0 {
             libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::CLONE_NEWNET
@@ -387,6 +408,21 @@ impl Sandbox {
             // the new namespace, so most operations on permissions will fail.
             libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::CLONE_NEWNET | libc::CLONE_NEWUSER
         };
+
+        // Drop supplemental groups. This is running as root and will
+        // support arbitrary uid/gid switching and we don't want to
+        // retain membership of any supplementary groups.
+        //
+        // This is not necessarily required for non-root case, where
+        // unprivileged user has started us, we will setup one user
+        // namespace with 1:1 mapping and there is no arbitrary uid/gid
+        // switching at all. In this mode setgroups() is not allowed, so
+        // we can't drop supplementary groups even if wanted to. Only
+        // way to do this will be to use newuidmap/newgidmap to setup
+        // user namespace which will allow setgroups().
+        if uid == 0 {
+            self.drop_supplemental_groups()?;
+        }
 
         let ret = unsafe { libc::unshare(flags) };
         if ret != 0 {
@@ -401,6 +437,8 @@ impl Sandbox {
                 unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) };
                 if uid == 0 {
                     self.setup_nofile_rlimit()?;
+                } else {
+                    self.setup_id_mappings(uid, gid)?;
                 }
                 self.setup_mounts()?;
                 Ok(None)
@@ -475,8 +513,9 @@ impl Sandbox {
         }
 
         // Unconditionally drop supplemental groups for every sandbox mode.
-        self.drop_supplemental_groups()?;
-
+        if self.sandbox_mode != SandboxMode::Namespace {
+            self.drop_supplemental_groups()?;
+        }
         match self.sandbox_mode {
             SandboxMode::Namespace => self.enter_namespace(),
             SandboxMode::Chroot => self.enter_chroot(),
