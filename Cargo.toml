@@ -16,7 +16,7 @@ bitflags = "1.2"
 capng = "0.2.1"
 env_logger = "0.8.4"
 futures = { version = "0.3", features = ["thread-pool"] }
-libc = "~0.2.87"
+libc = "~0.2.120"
 log = "0.4"
 libseccomp-sys = "0.2"
 structopt = "0.3"
