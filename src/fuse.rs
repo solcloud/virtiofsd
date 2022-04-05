@@ -4,6 +4,7 @@
 
 use std::mem;
 
+use crate::macros::enum_value;
 use bitflags::bitflags;
 use vm_memory::ByteValued;
 
@@ -647,57 +648,58 @@ pub struct FileLock {
 }
 unsafe impl ByteValued for FileLock {}
 
-#[repr(u32)]
-#[derive(Debug, Copy, Clone)]
-pub enum Opcode {
-    Lookup = 1,
-    Forget = 2, /* No Reply */
-    Getattr = 3,
-    Setattr = 4,
-    Readlink = 5,
-    Symlink = 6,
-    Mknod = 8,
-    Mkdir = 9,
-    Unlink = 10,
-    Rmdir = 11,
-    Rename = 12,
-    Link = 13,
-    Open = 14,
-    Read = 15,
-    Write = 16,
-    Statfs = 17,
-    Release = 18,
-    Fsync = 20,
-    Setxattr = 21,
-    Getxattr = 22,
-    Listxattr = 23,
-    Removexattr = 24,
-    Flush = 25,
-    Init = 26,
-    Opendir = 27,
-    Readdir = 28,
-    Releasedir = 29,
-    Fsyncdir = 30,
-    Getlk = 31,
-    Setlk = 32,
-    Setlkw = 33,
-    Access = 34,
-    Create = 35,
-    Interrupt = 36,
-    Bmap = 37,
-    Destroy = 38,
-    Ioctl = 39,
-    Poll = 40,
-    NotifyReply = 41,
-    BatchForget = 42,
-    Fallocate = 43,
-    Readdirplus = 44,
-    Rename2 = 45,
-    Lseek = 46,
-    CopyFileRange = 47,
-    SetupMapping = 48,
-    RemoveMapping = 49,
-    Syncfs = 50,
+enum_value! {
+    #[derive(Debug, Copy, Clone)]
+    pub enum Opcode: u32 {
+        Lookup = 1,
+        Forget = 2, /* No Reply */
+        Getattr = 3,
+        Setattr = 4,
+        Readlink = 5,
+        Symlink = 6,
+        Mknod = 8,
+        Mkdir = 9,
+        Unlink = 10,
+        Rmdir = 11,
+        Rename = 12,
+        Link = 13,
+        Open = 14,
+        Read = 15,
+        Write = 16,
+        Statfs = 17,
+        Release = 18,
+        Fsync = 20,
+        Setxattr = 21,
+        Getxattr = 22,
+        Listxattr = 23,
+        Removexattr = 24,
+        Flush = 25,
+        Init = 26,
+        Opendir = 27,
+        Readdir = 28,
+        Releasedir = 29,
+        Fsyncdir = 30,
+        Getlk = 31,
+        Setlk = 32,
+        Setlkw = 33,
+        Access = 34,
+        Create = 35,
+        Interrupt = 36,
+        Bmap = 37,
+        Destroy = 38,
+        Ioctl = 39,
+        Poll = 40,
+        NotifyReply = 41,
+        BatchForget = 42,
+        Fallocate = 43,
+        Readdirplus = 44,
+        Rename2 = 45,
+        Lseek = 46,
+        CopyFileRange = 47,
+        SetupMapping = 48,
+        RemoveMapping = 49,
+        Syncfs = 50,
+    }
 }
 
 #[repr(u32)]
