@@ -17,6 +17,7 @@ pub mod read_dir;
 pub mod sandbox;
 pub mod seccomp;
 pub mod server;
+pub mod util;
 
 use std::ffi::FromBytesWithNulError;
 use std::{error, fmt, io};
