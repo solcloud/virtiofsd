@@ -32,7 +32,7 @@ use virtiofsd::passthrough::{self, CachePolicy, InodeFileHandlesMode, Passthroug
 use virtiofsd::sandbox::{Sandbox, SandboxMode};
 use virtiofsd::seccomp::{enable_seccomp, SeccompAction};
 use virtiofsd::server::Server;
-use virtiofsd::Error as VhostUserFsError;
+use virtiofsd::{limits, Error as VhostUserFsError};
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
 use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::EventFd;
@@ -545,7 +545,8 @@ struct Opt {
     #[structopt(long)]
     syslog: bool,
 
-    /// Set maximum number of file descriptors (0 leaves rlimit unchanged) [default: the value read from `/proc/sys/fs/nr_open`]
+    /// Set maximum number of file descriptors (0 leaves rlimit unchanged)
+    /// [default: min(1000000, '/proc/sys/fs/nr_open')]
     #[structopt(long = "rlimit-nofile")]
     rlimit_nofile: Option<u64>,
 
@@ -884,21 +885,15 @@ fn main() {
         }
     }
 
-    let rlimit_nofile = if let Some(rlimit_nofile) = opt.rlimit_nofile {
-        if rlimit_nofile != 0 {
-            Some(rlimit_nofile)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    limits::setup_rlimit_nofile(opt.rlimit_nofile).unwrap_or_else(|error| {
+        error!("Error increasing number of open files: {}", error);
+        process::exit(1)
+    });
 
-    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode, rlimit_nofile)
-        .unwrap_or_else(|error| {
-            error!("Error creating sandbox: {}", error);
-            process::exit(1)
-        });
+    let mut sandbox = Sandbox::new(shared_dir.to_string(), sandbox_mode).unwrap_or_else(|error| {
+        error!("Error creating sandbox: {}", error);
+        process::exit(1)
+    });
     let fs_cfg = match sandbox.enter().unwrap_or_else(|error| {
         error!("Error entering sandbox: {}", error);
         process::exit(1)

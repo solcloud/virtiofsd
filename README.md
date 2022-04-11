@@ -169,9 +169,11 @@ Default: 0.
 ```shell
 --rlimit-nofile <rlimit-nofile>
 ```
-Set maximum number of file descriptors (0 leaves rlimit unchanged).
+Set maximum number of file descriptors.
+If the soft limit is greater than 1M  or `--rlimit-nofile=0`  is passed
+as parameter, the maximum number of file descriptors is not changed.
 
-Default: the value read from `/proc/sys/fs/nr_open`.
+Default: min(1000000, `/proc/sys/fs/nr_open`).
 
 ```shell
 --modcaps=<modcaps>
