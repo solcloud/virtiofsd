@@ -223,11 +223,11 @@ Default: auto.
 ```shell
 --inode-file-handles=<inode-file-handles>
 ```
-When to use file handles to reference inodes instead of `O_PATH` file descriptors (never, fallback).
+When to use file handles to reference inodes instead of `O_PATH` file descriptors (never, prefer, mandatory).
 
 - **never**: Never use file handles, always use `O_PATH` file descriptors.
 
-- **fallback**: Attempt to generate file handles, but fall back to `O_PATH` file descriptors where the underlying
+- **prefer**: Attempt to generate file handles, but fall back to `O_PATH` file descriptors where the underlying
   filesystem does not support file handles or `CAP_DAC_READ_SEARCH` is not available.
   Useful when there are various different filesystems under the shared directory and some of them do not support file handles.
 
