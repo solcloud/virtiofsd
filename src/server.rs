@@ -1089,7 +1089,7 @@ impl<F: FileSystem + Sync> Server<F> {
             // this only contains integer fields and any value is valid.
             let mut attr = unsafe { MaybeUninit::<libc::stat64>::zeroed().assume_init() };
             attr.st_ino = dir_entry.ino;
-            attr.st_mode = dir_entry.type_;
+            attr.st_mode = dir_entry.type_ << 12;
 
             // We use 0 for the inode value to indicate a negative entry.
             Entry {
