@@ -131,6 +131,11 @@ Enable writeback cache.
 ```
 Enable support for extended attributes.
 
+```shell
+--posix-acl
+```
+Enable support for posix ACLs (implies --xattr)
+
 #### Options
 ```shell
 --shared-dir <shared-dir>

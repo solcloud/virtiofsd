@@ -68,11 +68,25 @@ enum Error {
     QueueReader(VufDescriptorError),
     /// Creating a queue writer failed.
     QueueWriter(VufDescriptorError),
+    /// The unshare(CLONE_FS) call failed.
+    UnshareCloneFs(io::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "virtiofsd_error: {:?}", self)
+        use self::Error::UnshareCloneFs;
+        match self {
+            UnshareCloneFs(error) => {
+                write!(
+                    f,
+                    "The unshare(CLONE_FS) syscall failed with '{}'. \
+                    If running in a container please check that the container \
+                    runtime seccomp policy allows unshare.",
+                    error
+                )
+            }
+            _ => write!(f, "{:?}", self),
+        }
     }
 }
 
@@ -109,9 +123,25 @@ impl<F: FileSystem + Send + Sync + 'static> Clone for VhostUserFsThread<F> {
 
 impl<F: FileSystem + Send + Sync + 'static> VhostUserFsThread<F> {
     fn new(fs: F, thread_pool_size: usize) -> Result<Self> {
+        // Test that unshare(CLONE_FS) works, it will be called for each thread.
+        // It's an unprivileged system call but some Docker/Moby versions are
+        // known to reject it via seccomp when CAP_SYS_ADMIN is not given.
+        //
+        // Note that the program is single-threaded here so this syscall has no
+        // visible effect and is safe to make.
+        let ret = unsafe { libc::unshare(libc::CLONE_FS) };
+        if ret == -1 {
+            return Err(Error::UnshareCloneFs(std::io::Error::last_os_error()));
+        }
+
         let pool = if thread_pool_size > 0 {
             Some(
                 ThreadPoolBuilder::new()
+                    .after_start(|_| {
+                        // unshare FS for xattr operation
+                        let ret = unsafe { libc::unshare(libc::CLONE_FS) };
+                        assert_eq!(ret, 0); // Should not fail
+                    })
                     .pool_size(thread_pool_size)
                     .create()
                     .map_err(Error::CreateThreadPool)?,
@@ -477,6 +507,10 @@ struct Opt {
     #[structopt(long)]
     xattr: bool,
 
+    /// Enable support for posix ACLs (implies --xattr)
+    #[structopt(long)]
+    posix_acl: bool,
+
     /// Add custom rules for translating extended attributes between host and guest
     /// (e.g. :map::user.virtiofs.:)
     #[structopt(long, parse(try_from_str = <XattrMap as TryFrom<&str>>::try_from))]
@@ -628,6 +662,8 @@ fn parse_compat(opt: Opt) -> Opt {
             "announce_submounts" => opt.announce_submounts = true,
             "killpriv_v2" => opt.no_killpriv_v2 = false,
             "no_killpriv_v2" => opt.no_killpriv_v2 = true,
+            "posix_acl" => opt.posix_acl = true,
+            "no_posix_acl" => opt.posix_acl = false,
             "no_posix_lock" | "no_flock" => (),
             _ => argument_error(option),
         }
@@ -825,7 +861,7 @@ fn main() {
 
     let sandbox_mode = opt.sandbox.clone();
     let xattrmap = opt.xattrmap.clone();
-    let xattr = if xattrmap.is_some() { true } else { opt.xattr };
+    let xattr = xattrmap.is_some() || opt.posix_acl || opt.xattr;
     let thread_pool_size = opt.thread_pool_size;
     let readdirplus = match opt.cache {
         CachePolicy::Never => false,
@@ -937,6 +973,7 @@ fn main() {
             writeback: opt.writeback,
             allow_direct_io: opt.allow_direct_io,
             killpriv_v2,
+            posix_acl: opt.posix_acl,
             ..Default::default()
         },
     };
@@ -959,7 +996,13 @@ fn main() {
             process::exit(1);
         }
     };
-    let fs_backend = Arc::new(VhostUserFsBackend::new(fs, thread_pool_size).unwrap());
+
+    let fs_backend = Arc::new(
+        VhostUserFsBackend::new(fs, thread_pool_size).unwrap_or_else(|error| {
+            error!("Error creating vhost-user backend: {}", error);
+            process::exit(1)
+        }),
+    );
 
     let mut daemon = VhostUserDaemon::new(
         String::from("virtiofsd-backend"),

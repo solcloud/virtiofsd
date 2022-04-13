@@ -173,6 +173,27 @@ fn drop_effective_cap(cap_name: &str) -> io::Result<Option<ScopedCaps>> {
     ScopedCaps::new(cap_name)
 }
 
+struct ScopedUmask {
+    umask: libc::mode_t,
+}
+
+impl ScopedUmask {
+    fn new(new_umask: u32) -> io::Result<Option<Self>> {
+        let umask = unsafe { libc::umask(new_umask) };
+        Ok(Some(Self { umask }))
+    }
+}
+
+impl Drop for ScopedUmask {
+    fn drop(&mut self) {
+        unsafe { libc::umask(self.umask) };
+    }
+}
+
+fn set_umask(umask: u32) -> io::Result<Option<ScopedUmask>> {
+    ScopedUmask::new(umask)
+}
+
 /// The caching policy that the file system should report to the FUSE client. By default the FUSE
 /// protocol uses close-to-open consistency. This means that any cached contents of the file are
 /// invalidated the next time that file is opened.
@@ -351,6 +372,11 @@ pub struct Config {
     /// If `killpriv_v2` is true then it indicates that the file system is expected to clear the
     /// setuid and setgid bits.
     pub killpriv_v2: bool,
+
+    /// Enable support for posix ACLs
+    ///
+    /// The default is `false`.
+    pub posix_acl: bool,
 }
 
 impl Default for Config {
@@ -372,6 +398,7 @@ impl Default for Config {
             readdirplus: true,
             allow_direct_io: false,
             killpriv_v2: true,
+            posix_acl: false,
         }
     }
 }
@@ -414,6 +441,9 @@ pub struct PassthroughFs {
     // enabled in the configuration)
     announce_submounts: AtomicBool,
 
+    // Whether posix ACLs is enabled.
+    posix_acl: AtomicBool,
+
     cfg: Config,
 }
 
@@ -455,6 +485,7 @@ impl PassthroughFs {
             root_fd,
             writeback: AtomicBool::new(false),
             announce_submounts: AtomicBool::new(false),
+            posix_acl: AtomicBool::new(false),
             cfg,
         };
 
@@ -469,6 +500,11 @@ impl PassthroughFs {
             .map(CString::from);
 
         fs.check_working_file_handles()?;
+
+        // Safe because this doesn't modify any memory and there is no need to check the return
+        // value because this system call always succeeds. We need to clear the umask here because
+        // we want the client to be able to set all the bits in the mode.
+        unsafe { libc::umask(0o000) };
 
         Ok(fs)
     }
@@ -907,7 +943,23 @@ impl PassthroughFs {
         }
     }
 
+    fn block_xattr(&self, name: &[u8]) -> bool {
+        // Currently we only filter out posix acl xattrs.
+        // If acls are enabled, there is nothing to  filter.
+        if self.posix_acl.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        let acl_access = "system.posix_acl_access".as_bytes();
+        let acl_default = "system.posix_acl_default".as_bytes();
+        acl_access.starts_with(name) || acl_default.starts_with(name)
+    }
+
     fn map_client_xattrname<'a>(&self, name: &'a CStr) -> std::io::Result<Cow<'a, CStr>> {
+        if self.block_xattr(name.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+        }
+
         match &self.cfg.xattrmap {
             Some(map) => match map.map_client_xattr(name).expect("unterminated mapping") {
                 AppliedRule::Deny => Err(io::Error::from_raw_os_error(libc::EPERM)),
@@ -916,6 +968,33 @@ impl PassthroughFs {
             },
             None => Ok(Cow::Borrowed(name)),
         }
+    }
+
+    fn map_server_xattrlist(&self, xattr_names: Vec<u8>) -> Vec<u8> {
+        let all_xattrs = match &self.cfg.xattrmap {
+            Some(map) => map
+                .map_server_xattrlist(xattr_names)
+                .expect("unterminated mapping"),
+            None => xattr_names,
+        };
+
+        // filter out the blocked xattrs
+        let mut filtered = Vec::with_capacity(all_xattrs.len());
+        let all_xattrs = all_xattrs.split(|b| *b == 0).filter(|bs| !bs.is_empty());
+
+        for xattr in all_xattrs {
+            if !self.block_xattr(xattr) {
+                filtered.extend_from_slice(xattr);
+                filtered.push(0);
+            }
+        }
+
+        if filtered.is_empty() {
+            filtered.push(0);
+        }
+        filtered.shrink_to_fit();
+
+        filtered
     }
 
     fn drop_security_capability(&self, fd: libc::c_int) -> io::Result<()> {
@@ -1001,11 +1080,6 @@ impl FileSystem for PassthroughFs {
             FileOrHandle::File(path_fd)
         };
 
-        // Safe because this doesn't modify any memory and there is no need to check the return
-        // value because this system call always succeeds. We need to clear the umask here because
-        // we want the client to be able to set all the bits in the mode.
-        unsafe { libc::umask(0o000) };
-
         let mut inodes = self.inodes.write().unwrap();
 
         // Not sure why the root inode gets a refcount of 2 but that's what libfuse does.
@@ -1044,6 +1118,18 @@ impl FileSystem for PassthroughFs {
                 warn!("Cannot enable KILLPRIV_V2, client does not support it");
             }
         }
+        if self.cfg.posix_acl {
+            let acl_required_flags =
+                FsOptions::POSIX_ACL | FsOptions::DONT_MASK | FsOptions::SETXATTR_EXT;
+            if capable.contains(acl_required_flags) {
+                opts |= acl_required_flags;
+                self.posix_acl.store(true, Ordering::Relaxed);
+                debug!("init: enabling posix acl");
+            } else {
+                error!("Cannot enable posix ACLs, client does not support it");
+                return Err(io::Error::from_raw_os_error(libc::EPROTO));
+            }
+        }
 
         Ok(opts)
     }
@@ -1053,6 +1139,7 @@ impl FileSystem for PassthroughFs {
         self.inodes.write().unwrap().clear();
         self.writeback.store(false, Ordering::Relaxed);
         self.announce_submounts.store(false, Ordering::Relaxed);
+        self.posix_acl.store(false, Ordering::Relaxed);
     }
 
     fn statfs(&self, _ctx: Context, inode: Inode) -> io::Result<libc::statvfs64> {
@@ -1134,9 +1221,14 @@ impl FileSystem for PassthroughFs {
 
         let res = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
+            let _umask_guard = if self.posix_acl.load(Ordering::Relaxed) {
+                set_umask(umask)?
+            } else {
+                None
+            };
 
             // Safe because this doesn't modify any memory and we check the return value.
-            unsafe { libc::mkdirat(parent_file.as_raw_fd(), name.as_ptr(), mode & !umask) }
+            unsafe { libc::mkdirat(parent_file.as_raw_fd(), name.as_ptr(), mode) }
         };
         if res == 0 {
             self.do_lookup(parent, name)
@@ -1217,6 +1309,11 @@ impl FileSystem for PassthroughFs {
 
         let fd = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
+            let _umask_guard = if self.posix_acl.load(Ordering::Relaxed) {
+                set_umask(umask)?
+            } else {
+                None
+            };
 
             // Safe because this doesn't modify any memory and we check the return value. We don't
             // really check `flags` because if the kernel can't handle poorly specified flags then we
@@ -1233,7 +1330,7 @@ impl FileSystem for PassthroughFs {
                         | libc::O_CLOEXEC
                         | libc::O_NOFOLLOW
                         | libc::O_EXCL,
-                    mode & !(umask & 0o777),
+                    mode,
                 )
             }
         };
@@ -1609,13 +1706,18 @@ impl FileSystem for PassthroughFs {
 
         let res = {
             let (_uid, _gid) = set_creds(ctx.uid, ctx.gid)?;
+            let _umask_guard = if self.posix_acl.load(Ordering::Relaxed) {
+                set_umask(umask)?
+            } else {
+                None
+            };
 
             // Safe because this doesn't modify any memory and we check the return value.
             unsafe {
                 libc::mknodat(
                     parent_file.as_raw_fd(),
                     name.as_ptr(),
-                    (mode & !umask) as libc::mode_t,
+                    mode as libc::mode_t,
                     u64::from(rdev),
                 )
             }
@@ -1845,12 +1947,12 @@ impl FileSystem for PassthroughFs {
 
     fn setxattr(
         &self,
-        _ctx: Context,
+        ctx: Context,
         inode: Inode,
         name: &CStr,
         value: &[u8],
         flags: u32,
-        _extra_flags: SetxattrFlags,
+        extra_flags: SetxattrFlags,
     ) -> io::Result<()> {
         if !self.cfg.xattr {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
@@ -1865,6 +1967,24 @@ impl FileSystem for PassthroughFs {
             .ok_or_else(ebadf)?;
 
         let name = self.map_client_xattrname(name)?;
+
+        // If we are setting posix access acl and if SGID needs to be
+        // cleared, then switch to caller's gid and drop CAP_FSETID
+        // and that should make sure host kernel clears SGID.
+        //
+        // This probably will not work when we support idmapped mounts.
+        // In that case we will need to find a non-root gid and switch
+        // to it. (Instead of gid in request). Fix it when we support
+        // idmapped mounts.
+        let xattr_name = name.as_ref().to_str().unwrap();
+        let _clear_sgid_guard = if self.posix_acl.load(Ordering::Relaxed)
+            && extra_flags.contains(SetxattrFlags::SETXATTR_ACL_KILL_SGID)
+            && xattr_name.eq("system.posix_acl_access")
+        {
+            (drop_effective_cap("FSETID")?, set_creds(ctx.uid, ctx.gid)?)
+        } else {
+            (None, (None, None))
+        };
 
         let res = if is_safe_inode(data.mode) {
             // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
@@ -2054,11 +2174,7 @@ impl FileSystem for PassthroughFs {
             Ok(ListxattrReply::Count(res as u32))
         } else {
             buf.resize(res as usize, 0);
-            let buf = match &self.cfg.xattrmap {
-                Some(map) => map.map_server_xattrlist(buf).expect("unterminated mapping"),
-                None => buf,
-            };
-
+            let buf = self.map_server_xattrlist(buf);
             Ok(ListxattrReply::Names(buf))
         }
     }
