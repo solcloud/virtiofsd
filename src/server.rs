@@ -10,7 +10,7 @@ use crate::filesystem::{
 };
 use crate::fuse::*;
 use crate::{Error, Result};
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -88,62 +88,71 @@ impl<F: FileSystem + Sync> Server<F> {
             );
         }
 
-        debug!("Received request: {:?}", in_header.opcode);
-
-        match in_header.opcode {
-            x if x == Opcode::Lookup as u32 => self.lookup(in_header, r, w),
-            x if x == Opcode::Forget as u32 => self.forget(in_header, r), // No reply.
-            x if x == Opcode::Getattr as u32 => self.getattr(in_header, r, w),
-            x if x == Opcode::Setattr as u32 => self.setattr(in_header, r, w),
-            x if x == Opcode::Readlink as u32 => self.readlink(in_header, w),
-            x if x == Opcode::Symlink as u32 => self.symlink(in_header, r, w),
-            x if x == Opcode::Mknod as u32 => self.mknod(in_header, r, w),
-            x if x == Opcode::Mkdir as u32 => self.mkdir(in_header, r, w),
-            x if x == Opcode::Unlink as u32 => self.unlink(in_header, r, w),
-            x if x == Opcode::Rmdir as u32 => self.rmdir(in_header, r, w),
-            x if x == Opcode::Rename as u32 => self.rename(in_header, r, w),
-            x if x == Opcode::Link as u32 => self.link(in_header, r, w),
-            x if x == Opcode::Open as u32 => self.open(in_header, r, w),
-            x if x == Opcode::Read as u32 => self.read(in_header, r, w),
-            x if x == Opcode::Write as u32 => self.write(in_header, r, w),
-            x if x == Opcode::Statfs as u32 => self.statfs(in_header, w),
-            x if x == Opcode::Release as u32 => self.release(in_header, r, w),
-            x if x == Opcode::Fsync as u32 => self.fsync(in_header, r, w),
-            x if x == Opcode::Setxattr as u32 => self.setxattr(in_header, r, w),
-            x if x == Opcode::Getxattr as u32 => self.getxattr(in_header, r, w),
-            x if x == Opcode::Listxattr as u32 => self.listxattr(in_header, r, w),
-            x if x == Opcode::Removexattr as u32 => self.removexattr(in_header, r, w),
-            x if x == Opcode::Flush as u32 => self.flush(in_header, r, w),
-            x if x == Opcode::Init as u32 => self.init(in_header, r, w),
-            x if x == Opcode::Opendir as u32 => self.opendir(in_header, r, w),
-            x if x == Opcode::Readdir as u32 => self.readdir(in_header, r, w),
-            x if x == Opcode::Releasedir as u32 => self.releasedir(in_header, r, w),
-            x if x == Opcode::Fsyncdir as u32 => self.fsyncdir(in_header, r, w),
-            x if x == Opcode::Getlk as u32 => self.getlk(in_header, r, w),
-            x if x == Opcode::Setlk as u32 => self.setlk(in_header, r, w),
-            x if x == Opcode::Setlkw as u32 => self.setlkw(in_header, r, w),
-            x if x == Opcode::Access as u32 => self.access(in_header, r, w),
-            x if x == Opcode::Create as u32 => self.create(in_header, r, w),
-            x if x == Opcode::Interrupt as u32 => Ok(self.interrupt(in_header)),
-            x if x == Opcode::Bmap as u32 => self.bmap(in_header, r, w),
-            x if x == Opcode::Destroy as u32 => Ok(self.destroy()),
-            x if x == Opcode::Ioctl as u32 => self.ioctl(in_header, r, w),
-            x if x == Opcode::Poll as u32 => self.poll(in_header, r, w),
-            x if x == Opcode::NotifyReply as u32 => self.notify_reply(in_header, r, w),
-            x if x == Opcode::BatchForget as u32 => self.batch_forget(in_header, r, w),
-            x if x == Opcode::Fallocate as u32 => self.fallocate(in_header, r, w),
-            x if x == Opcode::Readdirplus as u32 => self.readdirplus(in_header, r, w),
-            x if x == Opcode::Rename2 as u32 => self.rename2(in_header, r, w),
-            x if x == Opcode::Lseek as u32 => self.lseek(in_header, r, w),
-            x if x == Opcode::CopyFileRange as u32 => self.copyfilerange(in_header, r, w),
-            x if x == Opcode::SetupMapping as u32 => self.setupmapping(in_header, r, w, vu_req),
-            x if x == Opcode::RemoveMapping as u32 => self.removemapping(in_header, r, w, vu_req),
-            x if x == Opcode::Syncfs as u32 => self.syncfs(in_header, w),
-            _ => reply_error(
+        if let Ok(opcode) = Opcode::try_from(in_header.opcode) {
+            debug!(
+                "Received request: opcode={:?} ({}), inode={}, unique={}, pid={}",
+                opcode, in_header.opcode, in_header.nodeid, in_header.unique, in_header.pid
+            );
+            match opcode {
+                Opcode::Lookup => self.lookup(in_header, r, w),
+                Opcode::Forget => self.forget(in_header, r), // No reply.
+                Opcode::Getattr => self.getattr(in_header, r, w),
+                Opcode::Setattr => self.setattr(in_header, r, w),
+                Opcode::Readlink => self.readlink(in_header, w),
+                Opcode::Symlink => self.symlink(in_header, r, w),
+                Opcode::Mknod => self.mknod(in_header, r, w),
+                Opcode::Mkdir => self.mkdir(in_header, r, w),
+                Opcode::Unlink => self.unlink(in_header, r, w),
+                Opcode::Rmdir => self.rmdir(in_header, r, w),
+                Opcode::Rename => self.rename(in_header, r, w),
+                Opcode::Link => self.link(in_header, r, w),
+                Opcode::Open => self.open(in_header, r, w),
+                Opcode::Read => self.read(in_header, r, w),
+                Opcode::Write => self.write(in_header, r, w),
+                Opcode::Statfs => self.statfs(in_header, w),
+                Opcode::Release => self.release(in_header, r, w),
+                Opcode::Fsync => self.fsync(in_header, r, w),
+                Opcode::Setxattr => self.setxattr(in_header, r, w),
+                Opcode::Getxattr => self.getxattr(in_header, r, w),
+                Opcode::Listxattr => self.listxattr(in_header, r, w),
+                Opcode::Removexattr => self.removexattr(in_header, r, w),
+                Opcode::Flush => self.flush(in_header, r, w),
+                Opcode::Init => self.init(in_header, r, w),
+                Opcode::Opendir => self.opendir(in_header, r, w),
+                Opcode::Readdir => self.readdir(in_header, r, w),
+                Opcode::Releasedir => self.releasedir(in_header, r, w),
+                Opcode::Fsyncdir => self.fsyncdir(in_header, r, w),
+                Opcode::Getlk => self.getlk(in_header, r, w),
+                Opcode::Setlk => self.setlk(in_header, r, w),
+                Opcode::Setlkw => self.setlkw(in_header, r, w),
+                Opcode::Access => self.access(in_header, r, w),
+                Opcode::Create => self.create(in_header, r, w),
+                Opcode::Interrupt => Ok(self.interrupt(in_header)),
+                Opcode::Bmap => self.bmap(in_header, r, w),
+                Opcode::Destroy => Ok(self.destroy()),
+                Opcode::Ioctl => self.ioctl(in_header, r, w),
+                Opcode::Poll => self.poll(in_header, r, w),
+                Opcode::NotifyReply => self.notify_reply(in_header, r, w),
+                Opcode::BatchForget => self.batch_forget(in_header, r, w),
+                Opcode::Fallocate => self.fallocate(in_header, r, w),
+                Opcode::Readdirplus => self.readdirplus(in_header, r, w),
+                Opcode::Rename2 => self.rename2(in_header, r, w),
+                Opcode::Lseek => self.lseek(in_header, r, w),
+                Opcode::CopyFileRange => self.copyfilerange(in_header, r, w),
+                Opcode::SetupMapping => self.setupmapping(in_header, r, w, vu_req),
+                Opcode::RemoveMapping => self.removemapping(in_header, r, w, vu_req),
+                Opcode::Syncfs => self.syncfs(in_header, w),
+            }
+        } else {
+            debug!(
+                "Received unknown request: opcode={}, inode={}",
+                in_header.opcode, in_header.nodeid
+            );
+            reply_error(
                 io::Error::from_raw_os_error(libc::ENOSYS),
                 in_header.unique,
                 w,
-            ),
+            )
         }
     }
 
