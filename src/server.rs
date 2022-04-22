@@ -986,8 +986,8 @@ impl<F: FileSystem + Sync> Server<F> {
                     minor: KERNEL_MINOR_VERSION,
                     max_readahead,
                     flags: enabled as u32,
-                    max_background: ::std::u16::MAX,
-                    congestion_threshold: (::std::u16::MAX / 4) * 3,
+                    max_background: u16::MAX,
+                    congestion_threshold: (u16::MAX / 4) * 3,
                     max_write: MAX_BUFFER_SIZE,
                     time_gran: 1, // nanoseconds
                     max_pages: max_pages.try_into().unwrap(),
@@ -1579,7 +1579,7 @@ fn add_dirent(
 ) -> io::Result<usize> {
     // Strip the trailing '\0'.
     let name = d.name.to_bytes();
-    if name.len() > ::std::u32::MAX as usize {
+    if name.len() > u32::MAX as usize {
         return Err(io::Error::from_raw_os_error(libc::EOVERFLOW));
     }
 
