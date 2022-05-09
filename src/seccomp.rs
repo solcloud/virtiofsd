@@ -137,6 +137,7 @@ pub fn enable_seccomp(action: SeccompAction, allow_remote_logging: bool) -> Resu
     allow_syscall!(ctx, libc::SYS_renameat);
     allow_syscall!(ctx, libc::SYS_renameat2);
     allow_syscall!(ctx, libc::SYS_removexattr);
+    #[cfg(target_env = "gnu")]
     allow_syscall!(ctx, libc::SYS_rseq);
     allow_syscall!(ctx, libc::SYS_rt_sigaction);
     allow_syscall!(ctx, libc::SYS_rt_sigprocmask);
