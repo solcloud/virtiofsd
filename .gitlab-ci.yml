@@ -43,6 +43,6 @@ publish:
   artifacts:
     name: "virtiofsd-$CI_COMMIT_SHORT_SHA"
     paths:
-      - target/debug/virtiofsd
+      - target/x86_64-unknown-linux-musl/release/virtiofsd
   only:
     - main@virtio-fs/virtiofsd
