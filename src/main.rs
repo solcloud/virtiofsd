@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::convert::{self, TryFrom, TryInto};
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::{env, error, fmt, io, process};
@@ -32,6 +33,7 @@ use virtiofsd::passthrough::{self, CachePolicy, InodeFileHandlesMode, Passthroug
 use virtiofsd::sandbox::{Sandbox, SandboxMode};
 use virtiofsd::seccomp::{enable_seccomp, SeccompAction};
 use virtiofsd::server::Server;
+use virtiofsd::util::write_pid_file;
 use virtiofsd::{limits, Error as VhostUserFsError};
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
 use vmm_sys_util::epoll::EventSet;
@@ -879,8 +881,10 @@ fn main() {
             | libc::S_IXOTH
     };
 
-    let (listener, socket_path) = match opt.fd.as_ref() {
-        Some(fd) => unsafe { (Listener::from_raw_fd(*fd), None) },
+    // We need to keep _pid_file around because it maintains a lock on the pid file
+    // that prevents another daemon from using the same pid file.
+    let (listener, socket_path, _pid_file) = match opt.fd.as_ref() {
+        Some(fd) => unsafe { (Listener::from_raw_fd(*fd), None, None) },
         None => {
             // Set umask to ensure the socket is created with the right permissions
             let old_umask = unsafe { libc::umask(umask) };
@@ -889,6 +893,14 @@ fn main() {
                 warn!("use of deprecated parameter '--socket': Please use the '--socket-path' option instead");
                 opt.socket.as_ref().unwrap() // safe to unwrap because clap ensures either --socket or --sock are passed
             });
+
+            let pid_file_name = socket.to_owned() + ".pid";
+            let pid_file_path = Path::new(pid_file_name.as_str());
+            let pid_file = write_pid_file(pid_file_path).unwrap_or_else(|error| {
+                error!("Error creating pid file '{}': {}", pid_file_name, error);
+                process::exit(1);
+            });
+
             let listener = Listener::new(socket, true).unwrap_or_else(|error| {
                 error!("Error creating listener: {}", error);
                 process::exit(1);
@@ -897,7 +909,7 @@ fn main() {
             // Restore umask
             unsafe { libc::umask(old_umask) };
 
-            (listener, Some(socket.clone()))
+            (listener, Some(socket.clone()), Some(pid_file))
         }
     };
 
