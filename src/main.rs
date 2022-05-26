@@ -596,7 +596,11 @@ struct Opt {
 
     /// Disable KILLPRIV V2 support
     #[structopt(long)]
-    no_killpriv_v2: bool,
+    _no_killpriv_v2: bool,
+
+    /// Enable KILLPRIV V2 support
+    #[structopt(long, overrides_with("no-killpriv-v2"))]
+    killpriv_v2: bool,
 
     /// Compatibility option that has no effect [deprecated]
     #[structopt(short = "f")]
@@ -662,8 +666,8 @@ fn parse_compat(opt: Opt) -> Opt {
             "allow_direct_io" => opt.allow_direct_io = true,
             "no_allow_direct_io" => opt.allow_direct_io = false,
             "announce_submounts" => opt.announce_submounts = true,
-            "killpriv_v2" => opt.no_killpriv_v2 = false,
-            "no_killpriv_v2" => opt.no_killpriv_v2 = true,
+            "killpriv_v2" => opt.killpriv_v2 = true,
+            "no_killpriv_v2" => opt.killpriv_v2 = false,
             "posix_acl" => opt.posix_acl = true,
             "no_posix_acl" => opt.posix_acl = false,
             "no_posix_lock" | "no_flock" => (),
@@ -831,7 +835,9 @@ fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode, modcaps: Op
 fn main() {
     let opt = parse_compat(Opt::from_args());
 
-    let killpriv_v2 = !opt.no_killpriv_v2;
+    // Enable killpriv_v2 only if user explicitly asked for it by using
+    // --killpriv-v2 or -o killpriv_v2. Otherwise disable it by default.
+    let killpriv_v2 = opt.killpriv_v2;
 
     if opt.print_capabilities {
         print_capabilities();
