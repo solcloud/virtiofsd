@@ -8,8 +8,6 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::str::FromStr;
 use std::{fmt, io};
 
-use tempdir::TempDir;
-
 #[derive(Debug)]
 pub enum Error {
     /// Failed to bind mount `/proc/self/fd` into a temporary directory.
@@ -195,16 +193,14 @@ impl Sandbox {
             return Err(Error::MountProc(std::io::Error::last_os_error()));
         }
 
-        // Bind-mount `/proc/self/fd` info a temporary directory, preventing access to ancestor
+        // Bind-mount `/proc/self/fd` onto /proc preventing access to ancestor
         // directories.
         let c_proc_self_fd = CString::new("/proc/self/fd").unwrap();
-        let tmp_dir = TempDir::new("virtiofsd-")
-            .map_err(|_| Error::CreateTempDir(std::io::Error::last_os_error()))?;
-        let c_tmp_dir = CString::new(tmp_dir.into_path().to_str().unwrap()).unwrap();
+        let c_proc_dir = CString::new("/proc").unwrap();
         let ret = unsafe {
             libc::mount(
                 c_proc_self_fd.as_ptr(),
-                c_tmp_dir.as_ptr(),
+                c_proc_dir.as_ptr(),
                 std::ptr::null(),
                 libc::MS_BIND,
                 std::ptr::null(),
@@ -214,24 +210,13 @@ impl Sandbox {
             return Err(Error::BindMountProcSelfFd(std::io::Error::last_os_error()));
         }
 
-        // Obtain a file descriptor for `/proc/self/fd` through the bind-mounted temporary directory.
-        let proc_self_fd = unsafe { libc::open(c_tmp_dir.as_ptr(), libc::O_PATH) };
+        // Obtain a file descriptor to /proc/self/fd/ by opening bind-mounted /proc directory.
+        let proc_self_fd = unsafe { libc::open(c_proc_dir.as_ptr(), libc::O_PATH) };
         if proc_self_fd < 0 {
             return Err(Error::OpenProcSelfFd(std::io::Error::last_os_error()));
         }
         // Safe because we just opened this fd.
         self.proc_self_fd = Some(unsafe { File::from_raw_fd(proc_self_fd) });
-
-        // Now that we have a file descriptor for `/proc/self/fd`, we no longer need the bind-mount.
-        // Unmount it and remove the temporary directory.
-        let ret = unsafe { libc::umount2(c_tmp_dir.as_ptr(), libc::MNT_DETACH) };
-        if ret < 0 {
-            return Err(Error::UmountTempDir(std::io::Error::last_os_error()));
-        }
-        let ret = unsafe { libc::rmdir(c_tmp_dir.as_ptr()) };
-        if ret < 0 {
-            return Err(Error::RmdirTempDir(std::io::Error::last_os_error()));
-        }
 
         // Bind-mount `self.shared_dir` on itself so we can use as new root on `pivot_root` syscall.
         let c_shared_dir = CString::new(self.shared_dir.clone()).unwrap();

@@ -20,7 +20,6 @@ libc = "~0.2.120"
 log = "0.4"
 libseccomp-sys = "0.2"
 structopt = "0.3"
-tempdir = "0.3"
 vhost-user-backend = "0.2"
 vhost = "0.3"
 virtio-bindings = { version = "0.1", features = ["virtio-v5_0_0"] }
