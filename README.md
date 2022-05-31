@@ -117,6 +117,11 @@ Disable `KILLPRIV V2` support.
 This is required if the shared directory is an NFS file system.
 
 ```shell
+--killpriv-v2
+```
+Enable `KILLPRIV V2` support. It is disabled by default.
+
+```shell
 --no-readdirplus
 ```
 Disable support for `READDIRPLUS` operations.

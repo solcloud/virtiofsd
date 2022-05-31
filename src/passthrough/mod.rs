@@ -397,7 +397,7 @@ impl Default for Config {
             inode_file_handles: Default::default(),
             readdirplus: true,
             allow_direct_io: false,
-            killpriv_v2: true,
+            killpriv_v2: false,
             posix_acl: false,
         }
     }
