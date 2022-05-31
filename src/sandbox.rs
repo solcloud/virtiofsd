@@ -6,7 +6,7 @@ use std::ffi::CString;
 use std::fs::{self, File};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::str::FromStr;
-use std::{fmt, io};
+use std::{error, fmt, io};
 
 #[derive(Debug)]
 pub enum Error {
@@ -71,6 +71,8 @@ pub enum Error {
     /// Sandbox mode unavailable for non-privileged users
     SandboxModeInvalidUID,
 }
+
+impl error::Error for Error {}
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

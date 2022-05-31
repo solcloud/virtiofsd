@@ -7,7 +7,7 @@ use libseccomp_sys::{
     SCMP_ACT_KILL_PROCESS, SCMP_ACT_LOG, SCMP_ACT_TRAP,
 };
 use std::convert::TryInto;
-use std::fmt;
+use std::{error, fmt};
 
 #[derive(Debug)]
 pub enum Error {
@@ -20,6 +20,8 @@ pub enum Error {
     /// Cannot initialize seccomp context
     InitSeccompContext,
 }
+
+impl error::Error for Error {}
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
