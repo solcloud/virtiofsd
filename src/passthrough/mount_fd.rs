@@ -357,10 +357,11 @@ impl MountFds {
             Some(p) => {
                 let p = String::from(p);
                 if let Some(prefix) = self.mountprefix.as_ref() {
-                    if let Some(suffix) = p.strip_prefix(prefix) {
+                    if let Some(suffix) = p.strip_prefix(prefix).filter(|s| !s.is_empty()) {
                         Ok(suffix.into())
                     } else {
-                        // Mount is outside the shared directory, so it must be the mount the root
+                        // The shared directory is the mount point (strip_prefix() returned "") or
+                        // mount is outside the shared directory, so it must be the mount the root
                         // directory is on
                         Ok("/".into())
                     }
