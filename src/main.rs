@@ -440,7 +440,7 @@ fn parse_seccomp(src: &str) -> std::result::Result<SeccompAction, &'static str> 
 /// On the command line, we want to allow aliases for `InodeFileHandlesMode` values.  This enum has
 /// all values allowed on the command line, and with `From`/`Into`, it can be translated into the
 /// internally used `InodeFileHandlesMode` enum.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum InodeFileHandlesCommandLineMode {
     /// `InodeFileHandlesMode::Never`
     Never,
