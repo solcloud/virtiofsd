@@ -235,7 +235,7 @@ impl Default for CachePolicy {
 }
 
 /// When to use file handles to reference inodes instead of `O_PATH` file descriptors.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum InodeFileHandlesMode {
     /// Never use file handles, always use `O_PATH` file descriptors.
     Never,
