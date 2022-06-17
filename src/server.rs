@@ -1550,6 +1550,21 @@ fn reply_ok<T: ByteValued>(
     Ok(w.bytes_written())
 }
 
+fn strerror(error: i32) -> String {
+    let mut err_desc: Vec<u8> = vec![0; 256];
+    let buf_ptr = err_desc.as_mut_ptr() as *mut libc::c_char;
+
+    // Safe because libc::strerror_r writes in err_desc at most err_desc.len() bytes
+    unsafe {
+        // We ignore the returned value since the two possible error values are:
+        // EINVAL and ERANGE, in the former err_desc will be "Unknown error #"
+        // and in the latter the message will be truncated to fit err_desc
+        libc::strerror_r(error, buf_ptr, err_desc.len());
+    }
+    let err_desc = err_desc.split(|c| *c == b'\0').next().unwrap();
+    String::from_utf8(err_desc.to_vec()).unwrap_or_else(|_| "".to_owned())
+}
+
 fn reply_error(e: io::Error, unique: u64, mut w: Writer) -> Result<usize> {
     let header = OutHeader {
         len: size_of::<OutHeader>() as u32,
@@ -1557,7 +1572,13 @@ fn reply_error(e: io::Error, unique: u64, mut w: Writer) -> Result<usize> {
         unique,
     };
 
-    debug!("Replying ERROR, header: {:?}", header);
+    debug!(
+        "Replying ERROR, header: OutHeader {{ error: {} ({}), unique: {}, len: {} }}",
+        header.error,
+        strerror(-header.error),
+        header.unique,
+        header.len
+    );
 
     w.write_all(header.as_slice())
         .map_err(Error::EncodeMessage)?;
