@@ -83,13 +83,7 @@ macro_rules! scoped_cred {
 
         impl Drop for $name {
             fn drop(&mut self) {
-                let res = unsafe { libc::syscall($syscall_nr, -1, 0, -1) };
-                if res < 0 {
-                    error!(
-                        "failed to change credentials back to root: {}",
-                        io::Error::last_os_error(),
-                    );
-                }
+                // do nothing :)
             }
         }
     };

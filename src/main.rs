@@ -826,10 +826,6 @@ fn drop_child_capabilities(inode_file_handles: InodeFileHandlesMode, modcaps: Op
         error!("can't set up the child capabilities: {}", e);
         process::exit(1);
     }
-    if let Err(e) = capng::apply(capng::Set::BOTH) {
-        error!("can't apply the child capabilities: {}", e);
-        process::exit(1);
-    }
 }
 
 fn main() {

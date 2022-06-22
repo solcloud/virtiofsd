@@ -446,15 +446,6 @@ impl Sandbox {
     /// On success, the returned value will be the PID of the child for the parent and `None` for
     /// the child itself, with the latter running isolated in `self.shared_dir`.
     pub fn enter(&mut self) -> Result<Option<i32>, Error> {
-        let uid = unsafe { libc::geteuid() };
-        if uid != 0 && self.sandbox_mode != SandboxMode::Namespace {
-            return Err(Error::SandboxModeInvalidUID);
-        }
-
-        // Unconditionally drop supplemental groups for every sandbox mode.
-        if self.sandbox_mode != SandboxMode::Namespace {
-            self.drop_supplemental_groups()?;
-        }
         match self.sandbox_mode {
             SandboxMode::Namespace => self.enter_namespace(),
             SandboxMode::Chroot => self.enter_chroot(),
